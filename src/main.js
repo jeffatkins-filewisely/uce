@@ -1144,6 +1144,7 @@ html, body {
 }
 
 /* In-flow with dock so native window can match measured toolbar bounds. */
+/* Opaque bar so WebView2 transparency does not “eat” the capture button (looked like an empty tile). */
 .uce-toolbar {
   position: relative;
   left: auto;
@@ -1152,11 +1153,15 @@ html, body {
   display: flex;
   flex-direction: row;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
   margin: 0;
-  padding: 0;
+  padding: 3px 6px;
   pointer-events: none;
   box-sizing: border-box;
+  background: rgba(15, 23, 42, 0.94);
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.45);
 }
 
 .uce-toolbar > button,
@@ -1216,7 +1221,7 @@ html, body {
 }
 
 .uce-btn {
-  border: none;
+  border: 2px solid rgba(255, 255, 255, 0.35);
   border-radius: 9999px;
   /* Default chrome only — RO/context level classes override background. */
   background: linear-gradient(180deg, #4d7ec4 0%, #2f5599 100%);
@@ -1226,6 +1231,7 @@ html, body {
   cursor: grab;
   opacity: 1;
   transition: transform 120ms ease, filter 150ms ease, box-shadow 180ms ease;
+  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.4), 0 2px 8px rgba(0, 0, 0, 0.35);
 }
 
 .uce-btn:hover {
@@ -1464,9 +1470,10 @@ html, body {
 }
 
 .uce-capture-wrap .uce-icon {
-  width: 12px;
-  height: 12px;
+  width: 16px;
+  height: 16px;
   pointer-events: none;
+  flex-shrink: 0;
 }
 
 .uce-capture-wrap .flash {
