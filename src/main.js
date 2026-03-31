@@ -1,3 +1,4 @@
+import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import {
@@ -5623,34 +5624,54 @@ requestAnimationFrame(() => {
   });
 });
 
-/** GitHub Releases + Tauri updater; throttled so we do not hammer the endpoint. */
-const UCE_UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+/** GitHub Releases + Tauri updater. (Was 6h — restarts within the window never checked.) */
+const UCE_UPDATE_CHECK_INTERVAL_MS = 15 * 60 * 1000;
 
-async function maybeCheckForUceAppUpdate() {
-  if (import.meta.env.DEV) return;
-  const last = Number(localStorage.getItem("uce_last_update_check_ms") || "0");
-  if (Date.now() - last < UCE_UPDATE_CHECK_INTERVAL_MS) return;
+/**
+ * @param {{ force?: boolean }} [options] — `force: true` skips throttle (for `window.__uceCheckUpdate()`).
+ * @returns {Promise<Record<string, unknown>>}
+ */
+async function runUceAppUpdateCheck(options = {}) {
+  const force = options.force === true;
+  if (import.meta.env.DEV) {
+    return { ok: false, reason: "dev_build" };
+  }
+  if (!force) {
+    const last = Number(localStorage.getItem("uce_last_update_check_ms") || "0");
+    const elapsed = Date.now() - last;
+    if (last > 0 && elapsed < UCE_UPDATE_CHECK_INTERVAL_MS) {
+      return {
+        ok: false,
+        reason: "throttled",
+        msUntilNextCheck: UCE_UPDATE_CHECK_INTERVAL_MS - elapsed,
+      };
+    }
+  }
   let update;
   try {
     const { check } = await import("@tauri-apps/plugin-updater");
     const { relaunch } = await import("@tauri-apps/plugin-process");
     update = await check();
     localStorage.setItem("uce_last_update_check_ms", String(Date.now()));
-    if (!update) return;
+    if (!update) {
+      return { ok: true, reason: "already_latest" };
+    }
     await update.downloadAndInstall();
     await relaunch();
+    return { ok: true, reason: "relaunching" };
   } catch (e) {
     if (update === undefined) {
       console.warn("[UCE] auto-update check failed:", e);
-    } else {
-      console.warn("[UCE] auto-update install failed:", e);
+      return { ok: false, reason: "check_failed", error: String(e) };
     }
+    console.warn("[UCE] auto-update install failed:", e);
+    return { ok: false, reason: "install_failed", error: String(e) };
   }
 }
 
 setTimeout(() => {
-  void maybeCheckForUceAppUpdate();
-}, 45_000);
+  void runUceAppUpdateCheck();
+}, 8000);
 
 function hideBlockingBanner() {
   if (!uceBlockingBanner) return;
@@ -6039,3 +6060,7 @@ window.__uceHealthStrip = updateUceHealthStrip;
 window.__uceSelfHealPrinter = selfHealPrinter;
 window.__uceGetEventLog = getUceEventLog;
 window.__uceLogEvent = logEvent;
+/** Installed app version from `tauri.conf.json` / bundle (compare to GitHub release). */
+window.__uceAppVersion = () => getVersion();
+/** Force an update check now (ignores 15‑min throttle). Returns a small status object. */
+window.__uceCheckUpdate = () => runUceAppUpdateCheck({ force: true });
