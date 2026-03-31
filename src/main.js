@@ -1101,7 +1101,7 @@ html, body {
   height: max-content;
   max-width: 100%;
   pointer-events: none;
-  opacity: 0.68;
+  opacity: 0.94;
   transition: opacity 0.2s ease;
   box-sizing: border-box;
   gap: 2px;
