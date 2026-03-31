@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-uce-ccc-cr-manual-close-word"
+description = "Invoke uce_ccc_cr_manual_close_word (CCC Change Request Word close — same as Ctrl+Shift+W) for QA and automation."
+commands.allow = ["uce_ccc_cr_manual_close_word"]

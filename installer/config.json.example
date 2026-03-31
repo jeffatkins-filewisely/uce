@@ -1,0 +1,7 @@
+{
+  "business_id": "REPLACE_WITH_FILEWISELY_BUSINESS_UUID",
+  "notes": "IT reference only. UCE reads tenant from in-app setup (Advanced Settings) or from build-time VITE_UCE_BUSINESS_ID / uce-tenant.json.",
+  "incoming_folder": "C:\\FileWisely\\Incoming",
+  "printer_display_name": "FileWisely Printer",
+  "uce_install_dir": "C:\\FileWisely\\App"
+}

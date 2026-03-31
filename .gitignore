@@ -1,0 +1,10 @@
+﻿node_modules/
+dist/
+build/
+target/
+target-check-overlay/
+src-tauri/target/
+.vscode/
+*.log
+.env
+.env.*

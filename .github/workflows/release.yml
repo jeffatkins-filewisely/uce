@@ -1,0 +1,52 @@
+# Build signed UCE installers and attach to a GitHub Release (updater `latest.json` + MSI).
+#
+# Prerequisites (one-time per repository):
+# 1. Create a GitHub repo and push this project (`git init`, remote, push).
+# 2. Repository secrets (Settings → Secrets and variables → Actions):
+#    - TAURI_SIGNING_PRIVATE_KEY = full contents of your minisign *private* key
+#      (same key pair whose *public* key is in `src-tauri/tauri.conf.json` → `plugins.updater.pubkey`).
+#    - TAURI_SIGNING_PRIVATE_KEY_PASSWORD = optional; omit or empty if the key has no password.
+# 3. Edit `src-tauri/tauri.conf.json` → `plugins.updater.endpoints` so the URL matches
+#    `https://github.com/<your-org>/<your-repo>/releases/latest/download/latest.json`
+#
+# Trigger: push a version tag, e.g. `git tag v0.1.2 && git push origin v0.1.2`
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  publish:
+    permissions:
+      contents: write
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build and upload to GitHub Release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: v__VERSION__
+          releaseName: "UCE v__VERSION__"
+          releaseBody: "Auto-built release. Installed apps check this repo for updates (see `latest.json` asset)."
+          releaseDraft: false
+          prerelease: false
+          args: ""
