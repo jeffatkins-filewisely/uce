@@ -46,7 +46,10 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: "UCE v__VERSION__"
-          releaseBody: "Auto-built release. Installed apps check this repo for updates (see `latest.json` asset)."
+          releaseBody: "Auto-built release. Installed apps check this repo for updates (see latest.json asset)."
           releaseDraft: false
           prerelease: false
           args: ""
+          # Match `bundle.targets` in tauri.conf.json (MSI + signed updater artifacts).
+          includeUpdaterJson: true
+          updaterJsonPreferNsis: false

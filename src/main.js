@@ -2070,7 +2070,9 @@ html, body {
   max-height: 140px;
 }
 
+/* Health dot hidden — status still drives banners/modals; hover was extra chrome. */
 .uce-health {
+  display: none !important;
   width: 10px;
   height: 10px;
   border-radius: 50%;
@@ -2570,7 +2572,6 @@ function getCompactWindowSize() {
   }
 
   const roW = estimateRoToggleWidthPx();
-  const healthW = 12;
   const gap = 2;
   const pad = 0;
   const rowH = 38;
@@ -2587,8 +2588,6 @@ function getCompactWindowSize() {
     gap +
     (getTrainButtonVisible() ? train + gap : 0) +
     settings +
-    gap +
-    healthW +
     pad;
   const out = { width: w, height: h };
   logOverlayHitDebug(out.width, out.height, "getCompact(formula-fallback)");
@@ -4079,7 +4078,7 @@ async function dismissRightPeek() {
 }
 
 /** Shown at the top of in-overlay success/info toasts (not the Windows printer driver balloon). */
-const TOAST_BRAND = "UCE — Universal Capture Engine";
+const TOAST_BRAND = "UCE";
 
 /** `durationMs <= 0` = stay open until {@link dismissToast} (e.g. Esc). */
 function showToast(text, kind = "success", durationMs = 3600) {

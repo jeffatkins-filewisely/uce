@@ -138,12 +138,12 @@ export function applyUceFloatingButtonChrome(button, detected, opts = {}) {
 
   const d = detected;
   const reason = opts.reason;
-  button.setAttribute(
-    "title",
-    reason?.tooltipText && String(reason.tooltipText).trim()
-      ? reason.tooltipText
-      : tooltipFor(d)
-  );
+  /** One-line hover; avoid multi-line `tooltipText` (felt like a large “tile”). Full reasons stay in `data-uce-decision-reasons` for debug. */
+  const short =
+    reason?.shortSummary && String(reason.shortSummary).trim()
+      ? String(reason.shortSummary).trim()
+      : "";
+  button.setAttribute("title", short || tooltipFor(d));
   if (reason?.decisionReasons?.length) {
     try {
       button.setAttribute(
