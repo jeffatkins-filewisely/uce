@@ -2289,7 +2289,7 @@ html, body {
 <div id="uceTenantSetup" class="uce-tenant-setup" hidden>
   <div class="uce-tenant-setup-inner">
     <h2 class="uce-tenant-setup-title">Connect FileWisely</h2>
-    <p class="uce-tenant-setup-hint">Paste your <strong>business ID</strong> (UUID) from FileWisely — Advanced Settings → Desktop Agent. Required to upload captures.</p>
+    <p class="uce-tenant-setup-hint">Paste your <strong>business ID</strong> (UUID) from FileWisely (Advanced Settings in the web app). Required to upload captures.</p>
     <input type="text" id="uceTenantInput" class="uce-tenant-input" spellcheck="false" autocomplete="off" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" aria-label="Business ID" />
     <p id="uceTenantError" class="uce-tenant-error" hidden role="alert"></p>
     <button type="button" class="uce-tenant-save" id="uceTenantSaveBtn">Continue</button>
@@ -2395,7 +2395,7 @@ async function showTenantSetupDialog() {
       const v = input.value.trim();
       if (!isValidUuid(v)) {
         errEl.textContent =
-          "Enter a valid business ID (UUID). Copy it from FileWisely → Desktop Agent.";
+          "Enter a valid business ID (UUID). Copy it from FileWisely → Advanced Settings.";
         errEl.hidden = false;
         return;
       }
