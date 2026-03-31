@@ -2385,14 +2385,22 @@ async function showTenantSetupDialog() {
     throw new Error("UCE: tenant setup DOM missing");
   }
 
-  overlay.hidden = false;
-  appEl.classList.add("uce-tenant-setup-open");
+  /* Resize the native window *before* showing the overlay. If we show first at ~58×38px,
+     users only see a random slice of the dialog (e.g. "Settings in the web app)") — no field/button. */
   try {
     await invoke("uce_set_overlay_logical_size", { width: 420, height: 280 });
-    await delayToastLayout(80);
   } catch (e) {
-    console.error("tenant setup resize:", e);
+    console.error("tenant setup resize (1):", e);
+    try {
+      await invoke("uce_set_overlay_logical_size", { width: 420, height: 280 });
+    } catch (e2) {
+      console.error("tenant setup resize (2):", e2);
+    }
   }
+  await delayToastLayout(80);
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  overlay.hidden = false;
+  appEl.classList.add("uce-tenant-setup-open");
   input.value = "";
   errEl.hidden = true;
   errEl.textContent = "";
