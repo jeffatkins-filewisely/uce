@@ -5697,8 +5697,19 @@ requestAnimationFrame(() => {
   });
 });
 
-/** GitHub Releases + Tauri updater. (Was 6h — restarts within the window never checked.) */
+/**
+ * GitHub Releases + Tauri v2 `plugin-updater`.
+ * Endpoint must match `plugins.updater.endpoints[0]` in `src-tauri/tauri.conf.json`.
+ * Public key for signatures lives only in that file — do not duplicate here; verify manually that signing uses the same pair.
+ */
+const UCE_UPDATER_ENDPOINT =
+  "https://github.com/jeffatkins-filewisely/uce/releases/latest/download/latest.json";
+
+/** Minimum time between automatic checks (ms). */
 const UCE_UPDATE_CHECK_INTERVAL_MS = 15 * 60 * 1000;
+
+/** After bootstrap (tenant + layout), wait this long before the first check so startup stays responsive. */
+const UCE_STARTUP_UPDATE_DELAY_MS = 8_000;
 
 /**
  * @param {{ force?: boolean }} [options] — `force: true` skips throttle (for `window.__uceCheckUpdate()`).
@@ -5706,45 +5717,125 @@ const UCE_UPDATE_CHECK_INTERVAL_MS = 15 * 60 * 1000;
  */
 async function runUceAppUpdateCheck(options = {}) {
   const force = options.force === true;
-  if (import.meta.env.DEV) {
-    return { ok: false, reason: "dev_build" };
+  let currentVersion = "unknown";
+  try {
+    currentVersion = await getVersion();
+  } catch {
+    /* ignore */
   }
+
+  console.info(
+    `[UCE updater] check_started force=${force} currentVersion=${currentVersion} prod=${import.meta.env.PROD === true}`
+  );
+  console.info(`[UCE updater] endpoint=${UCE_UPDATER_ENDPOINT}`);
+
+  if (import.meta.env.DEV) {
+    console.info(
+      "[UCE updater] skip: dev_build — Tauri updater runs in packaged installs only (not `vite dev`)"
+    );
+    return { ok: false, reason: "dev_build", currentVersion };
+  }
+
   if (!force) {
     const last = Number(localStorage.getItem("uce_last_update_check_ms") || "0");
     const elapsed = Date.now() - last;
     if (last > 0 && elapsed < UCE_UPDATE_CHECK_INTERVAL_MS) {
+      const msUntilNextCheck = UCE_UPDATE_CHECK_INTERVAL_MS - elapsed;
+      console.info(`[UCE updater] skip: throttled msUntilNextCheck=${msUntilNextCheck}`);
       return {
         ok: false,
         reason: "throttled",
-        msUntilNextCheck: UCE_UPDATE_CHECK_INTERVAL_MS - elapsed,
+        msUntilNextCheck,
+        currentVersion,
       };
     }
   }
+
   let update;
   try {
     const { check } = await import("@tauri-apps/plugin-updater");
     const { relaunch } = await import("@tauri-apps/plugin-process");
-    update = await check();
+
+    console.info("[UCE updater] request: plugin-updater check() …");
+    update = await check({ timeout: 120_000 });
     localStorage.setItem("uce_last_update_check_ms", String(Date.now()));
+
     if (!update) {
-      return { ok: true, reason: "already_latest" };
+      console.info(
+        `[UCE updater] no_update_available currentVersion=${currentVersion}`
+      );
+      logEvent("updater_no_update", currentVersion);
+      return { ok: true, reason: "already_latest", currentVersion };
     }
-    await update.downloadAndInstall();
+
+    console.info(
+      `[UCE updater] update_found currentVersion=${update.currentVersion} latestVersion=${update.version}`
+    );
+    logEvent(
+      "updater_update_found",
+      `${update.currentVersion} -> ${update.version}`
+    );
+
+    console.info("[UCE updater] download_and_install_started");
+    showToast("Downloading UCE update…", "success", 4200);
+
+    await update.downloadAndInstall((event) => {
+      if (event.event === "Started") {
+        console.info("[UCE updater] download_started", {
+          contentLength: event.data?.contentLength,
+        });
+      } else if (event.event === "Progress") {
+        /* optional: verbose; omit per-chunk to avoid log spam */
+      } else if (event.event === "Finished") {
+        console.info("[UCE updater] download_finished");
+      }
+    });
+
+    console.info("[UCE updater] install_completed — relaunching app");
+    logEvent("updater_relaunching", update.version);
     await relaunch();
-    return { ok: true, reason: "relaunching" };
+    return {
+      ok: true,
+      reason: "relaunching",
+      currentVersion: update.currentVersion,
+      latestVersion: update.version,
+    };
   } catch (e) {
+    const err = String(e);
+    console.error("[UCE updater] error:", e);
+    logEvent("updater_error", err);
     if (update === undefined) {
-      console.warn("[UCE] auto-update check failed:", e);
-      return { ok: false, reason: "check_failed", error: String(e) };
+      return { ok: false, reason: "check_failed", error: err, currentVersion };
     }
-    console.warn("[UCE] auto-update install failed:", e);
-    return { ok: false, reason: "install_failed", error: String(e) };
+    return {
+      ok: false,
+      reason: "install_failed",
+      error: err,
+      currentVersion,
+    };
   }
 }
 
-setTimeout(() => {
-  void runUceAppUpdateCheck();
-}, 8000);
+/**
+ * Production only: first check after `UCE_STARTUP_UPDATE_DELAY_MS`, then every `UCE_UPDATE_CHECK_INTERVAL_MS`.
+ * Scheduled from `bootstrapUce` so tenant setup / deep link run first.
+ */
+function scheduleUceStartupUpdateChecks() {
+  if (import.meta.env.DEV) {
+    console.info("[UCE updater] startup_schedule_skipped: dev_build");
+    return;
+  }
+  console.info(
+    `[UCE updater] startup_schedule: firstCheckDelayMs=${UCE_STARTUP_UPDATE_DELAY_MS} recurringIntervalMs=${UCE_UPDATE_CHECK_INTERVAL_MS}`
+  );
+  setTimeout(() => {
+    void runUceAppUpdateCheck();
+    setInterval(
+      () => void runUceAppUpdateCheck(),
+      UCE_UPDATE_CHECK_INTERVAL_MS
+    );
+  }, UCE_STARTUP_UPDATE_DELAY_MS);
+}
 
 function hideBlockingBanner() {
   if (!uceBlockingBanner) return;
@@ -6087,6 +6178,7 @@ async function uceRuntimePrinterCheck() {
       }
     })();
   }, RO_STATUS_BACKGROUND_POLL_MS);
+  scheduleUceStartupUpdateChecks();
 })();
 
 // Dev helper: call window.__uceDebugState() in DevTools.
@@ -6136,5 +6228,15 @@ window.__uceGetEventLog = getUceEventLog;
 window.__uceLogEvent = logEvent;
 /** Installed app version from `tauri.conf.json` / bundle (compare to GitHub release). */
 window.__uceAppVersion = () => getVersion();
-/** Force an update check now (ignores 15‑min throttle). Returns a small status object. */
+/** Same URL as `plugins.updater.endpoints[0]` in `tauri.conf.json` (for debugging). */
+window.__uceUpdaterEndpoint = () => UCE_UPDATER_ENDPOINT;
+/** Delays used for automatic checks (production installs only). */
+window.__uceUpdaterScheduleInfo = () => ({
+  startupDelayMs: UCE_STARTUP_UPDATE_DELAY_MS,
+  recurringIntervalMs: UCE_UPDATE_CHECK_INTERVAL_MS,
+});
+/**
+ * Force an update check now (ignores 15‑min throttle). Returns a status object.
+ * Open DevTools → Console on an installed build and run: `await window.__uceCheckUpdate()`
+ */
 window.__uceCheckUpdate = () => runUceAppUpdateCheck({ force: true });
