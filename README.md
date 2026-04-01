@@ -14,6 +14,14 @@ This folder is not automatically a Git repository: run `git init`, create a repo
    `git tag v0.1.2 && git push origin v0.1.2`  
    The workflow in `.github/workflows/release.yml` builds the MSI, signs updater artifacts, and attaches them to the GitHub release. Installed clients poll for updates (see `maybeCheckForUceAppUpdate` in `src/main.js`).
 
+### Business ID deep link (FileWisely web → desktop)
+
+After install, users should not need to paste the UUID manually if the web app opens the desktop handler:
+
+`uce://connect?business_id=<uuid>`
+
+Example anchor/button: `href="uce://connect?business_id=${businessId}"` (or redirect to that URL from your edge function). UCE registers the `uce` scheme on Windows; a running instance receives the link via the single-instance + deep-link plugins.
+
 ## FileWisely PDF printer (Windows)
 
 Prepare **Bullzip PDF Printer** for silent capture to `C:\FileWisely\Incoming\` (admin required). From the **repository root**:

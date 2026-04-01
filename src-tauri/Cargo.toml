@@ -1,6 +1,6 @@
 [package]
 name = "tauri-app"
-version = "0.1.8"
+version = "0.1.10"
 edition = "2021"
 
 [lib]
@@ -28,8 +28,10 @@ sysinfo = "0.32"
 tauri-plugin-global-shortcut = { version = "2", default-features = false }
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+tauri-plugin-deep-link = "2"
 
 [target.'cfg(windows)'.dependencies]
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",

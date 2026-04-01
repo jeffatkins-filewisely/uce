@@ -1161,11 +1161,28 @@ pub fn run() {
         })
         .build();
 
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+
+    #[cfg(windows)]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|_app, argv, _cwd| {
+            eprintln!("[UCE] single-instance argv: {:?}", argv);
+        }));
+    }
+
+    builder
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(global_shortcut_plugin)
+        .plugin(tauri_plugin_deep_link::init())
         .setup(|app| {
+            #[cfg(windows)]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                if let Err(e) = app.deep_link().register_all() {
+                    eprintln!("[UCE] deep_link register_all: {}", e);
+                }
+            }
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
                 let _ = window.set_always_on_top(true);

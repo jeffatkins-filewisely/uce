@@ -2442,6 +2442,64 @@ async function showTenantSetupDialog() {
   });
 }
 
+/** Close tenant overlay if it was left open (e.g. after `uce://connect?business_id=`). */
+function hideTenantOverlayIfShown() {
+  const overlay = document.getElementById("uceTenantSetup");
+  if (!overlay || overlay.hidden) return;
+  overlay.hidden = true;
+  appEl.classList.remove("uce-tenant-setup-open");
+}
+
+/** Parse `business_id` from `uce://connect?...` or `uce://?...` (FileWisely "Open in app"). */
+function parseBusinessIdFromUceUrl(urlStr) {
+  try {
+    const s = String(urlStr).trim();
+    if (!/^uce:/i.test(s)) return null;
+    const normalized = s.replace(/^uce:\/\//i, "http://uce.invalid/");
+    const u = new URL(normalized);
+    const path = (u.pathname || "")
+      .replace(/^\/+|\/+$/g, "")
+      .toLowerCase();
+    if (path && path !== "connect") return null;
+    const id = u.searchParams.get("business_id");
+    return id ? id.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+async function tryApplyBusinessIdFromUrls(urls) {
+  if (!Array.isArray(urls)) return;
+  for (const raw of urls) {
+    const id = parseBusinessIdFromUceUrl(raw);
+    if (!id || !isValidUuid(id)) continue;
+    try {
+      await invoke("save_tenant_business_id", { business_id: id });
+      await initTenantContext();
+      hideTenantOverlayIfShown();
+      await setCompactWindowSize();
+      showToast("Connected FileWisely — business ID applied from link.", "success");
+      logEvent("tenant_connected_via_link", `business_id=${id}`);
+      return;
+    } catch (e) {
+      console.warn("[UCE] save tenant from deep link:", e);
+    }
+  }
+}
+
+async function initUceDeepLinkListeners() {
+  try {
+    const { getCurrent, onOpenUrl } = await import("@tauri-apps/plugin-deep-link");
+    const startUrls = await getCurrent();
+    if (startUrls?.length) await tryApplyBusinessIdFromUrls(startUrls);
+    await onOpenUrl((urls) => {
+      void tryApplyBusinessIdFromUrls(urls);
+    });
+  } catch (e) {
+    console.warn("[UCE] deep-link init:", e);
+  }
+}
+
 const TRAIN_BUTTON_VISIBLE_KEY = "uce_train_button_visible";
 
 /** `null` in storage = show T (backward compatible). Set `"0"` to hide during steady-state. */
@@ -5935,6 +5993,7 @@ async function uceRuntimePrinterCheck() {
 (async function bootstrapUce() {
   try {
     await initTenantContext();
+    await initUceDeepLinkListeners();
     if (!getBusinessId()) {
       await showTenantSetupDialog();
     }
