@@ -15,6 +15,7 @@
     "updater:default",
     "process:default",
     "deep-link:default",
-    "allow-uce-ccc-cr-manual-close-word"
+    "allow-uce-ccc-cr-manual-close-word",
+    "allow-uce-printer-commands"
   ]
 }

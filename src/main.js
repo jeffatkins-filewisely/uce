@@ -6335,6 +6335,20 @@ async function updateUceHealthStrip() {
   }
 }
 
+/** Show/focus the overlay so startup repair toasts are not clipped or behind other windows. */
+async function prepareWindowForPrinterRepairUi() {
+  try {
+    await appWindow.show();
+  } catch (_) {
+    /* ignore */
+  }
+  try {
+    await invoke("focus_overlay");
+  } catch (_) {
+    /* ignore */
+  }
+}
+
 async function selfHealPrinter(fromStartup = false) {
   try {
     await refreshPrinterHealthFromBackend();
@@ -6353,11 +6367,13 @@ async function selfHealPrinter(fromStartup = false) {
     }
     lastPrinterRepairAttemptAt = now;
     console.warn("[UCE] Printer missing — attempting repair (silent PDF installer + rename)");
+    await prepareWindowForPrinterRepairUi();
     showToast(
       "Installing FileWisely PDF printer… If Windows asks for permission, click Yes.",
       "info",
       0
     );
+    void fitWindowToToast();
     const rep = await invoke("repair_printer");
     dismissToast();
     if (rep?.ok) {
@@ -6437,15 +6453,15 @@ async function uceRuntimePrinterCheck() {
 }
 
 (async function bootstrapUce() {
+  /* Schedule first — never block on uce_check (spooler/PowerShell can stall) or tenant dialog. */
+  setTimeout(
+    () => void selfHealPrinter(true),
+    PRINTER_STARTUP_REPAIR_DELAY_MS
+  );
   try {
     await initTenantContext();
     await initUceDeepLinkListeners();
-    await uceRuntimePrinterCheck();
-    /* Repair must not wait on tenant UUID — schedule before setup dialog so driver install can run in parallel. */
-    setTimeout(
-      () => void selfHealPrinter(true),
-      PRINTER_STARTUP_REPAIR_DELAY_MS
-    );
+    void uceRuntimePrinterCheck();
     if (!getBusinessId()) {
       await showTenantSetupDialog();
     }

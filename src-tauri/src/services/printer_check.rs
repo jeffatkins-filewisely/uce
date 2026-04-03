@@ -117,6 +117,36 @@ fn printer_repair_debug(msg: impl AsRef<str>) {
     eprintln!("[UCE printer repair] {}", msg.as_ref());
 }
 
+/// Modal dialog so users always see the next step (WebView toast can be clipped at 38×38).
+#[cfg(windows)]
+fn message_box_printer_repair_uac_hint() {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW;
+    const MB_OK: u32 = 0;
+    const MB_ICONINFORMATION: u32 = 0x40;
+    const MB_SETFOREGROUND: u32 = 0x0001_0000;
+    let title: Vec<u16> = OsStr::new("UCE — Install PDF printer")
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let body = "UCE will install the FileWisely PDF printer driver.\r\n\r\n\
+If Windows shows User Account Control (UAC), click YES to allow the install.\r\n\r\n\
+Click OK to continue.";
+    let text: Vec<u16> = OsStr::new(body)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            title.as_ptr(),
+            MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND,
+        );
+    }
+}
+
 /// Run Bullzip/Inno setup **elevated**. Printer drivers require admin; spawning `setup.exe` from a normal
 /// user session fails silently without UAC. Uses `Start-Process -Verb RunAs` (one UAC prompt).
 #[cfg(windows)]
@@ -194,6 +224,7 @@ pub fn repair_filewisely_printer(search_roots: Vec<PathBuf>) -> Result<RepairPri
         setup_exe.display()
     );
     printer_repair_debug(format!("running installer (elevated): {:?}", setup_exe));
+    message_box_printer_repair_uac_hint();
     let status = run_pdf_setup_elevated(&setup_exe)?;
     if !status.success() {
         printer_repair_debug(format!("installer exit code: {:?}", status.code()));
