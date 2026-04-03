@@ -164,8 +164,9 @@ pub fn repair_filewisely_printer(bundled_pdf_printer_dir: Option<PathBuf>) -> Re
     };
 
     printer_repair_debug(format!("running installer: {:?}", setup_exe));
+    // Bullzip ships as Inno Setup: /SILENT is weaker; use Inno-style silent + no restart.
     let status = std::process::Command::new(&setup_exe)
-        .arg("/SILENT")
+        .args(["/VERYSILENT", "/NORESTART"])
         .status()
         .map_err(|e| format!("run PDF installer: {e}"))?;
     if !status.success() {

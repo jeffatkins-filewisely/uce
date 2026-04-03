@@ -7,7 +7,7 @@ param(
     [string]$IncomingRoot = "C:\FileWisely\Incoming",
     [string]$PrinterDisplayName = "FileWisely Printer",
     [string]$BullzipExe = "",
-    [string[]]$BullzipSilentArgs = @("/SILENT")
+    [string[]]$BullzipSilentArgs = @("/VERYSILENT", "/NORESTART")
 )
 
 $ErrorActionPreference = "Stop"

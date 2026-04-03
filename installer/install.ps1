@@ -16,6 +16,8 @@ $Incoming = Join-Path $FwRoot "Incoming"
 $AppDir = Join-Path $FwRoot "App"
 $LogPath = Join-Path $FwRoot "install.log"
 $PrinterDisplayName = "FileWisely Printer"
+# Bullzip PDF Printer (Inno Setup). /SILENT alone often fails silent install; match vendor flags.
+$PdfPrinterSilentArgs = @("/VERYSILENT", "/NORESTART")
 
 $TranscriptOn = $false
 try {
@@ -69,7 +71,7 @@ function Ensure-FileWiselyPrinter {
         return $false
     }
     try {
-        $null = Start-Process -FilePath $setup.FullName -ArgumentList @("/SILENT") -Wait -PassThru -ErrorAction Stop
+        $null = Start-Process -FilePath $setup.FullName -ArgumentList $PdfPrinterSilentArgs -Wait -PassThru -ErrorAction Stop
     }
     catch {
         Write-Warning "Re-install printer failed: $_"
@@ -163,7 +165,7 @@ try {
             Write-Host ""
             Write-Host "Running printer installer: $($setup.FullName)"
             $ranPrinterSetup = $true
-            $p = Start-Process -FilePath $setup.FullName -ArgumentList @("/SILENT") -PassThru -Wait
+            $p = Start-Process -FilePath $setup.FullName -ArgumentList $PdfPrinterSilentArgs -PassThru -Wait
             if ($null -ne $p.ExitCode -and $p.ExitCode -ne 0) {
                 Write-Warning "Installer exit code $($p.ExitCode). Check vendor docs for silent switches."
             }

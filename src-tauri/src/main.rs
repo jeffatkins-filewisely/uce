@@ -1250,8 +1250,6 @@ pub fn run() {
             }
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
-                let _ = window.set_always_on_top(true);
-                let _ = window.set_skip_taskbar(true);
                 let _ = window.set_resizable(false);
                 let h = app.handle().clone();
                 apply_startup_window_position(&h, &window);

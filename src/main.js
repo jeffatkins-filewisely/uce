@@ -5883,6 +5883,11 @@ document.addEventListener("keydown", (e) => {
     dismissToast();
     return;
   }
+  if (appEl.classList.contains("uce-blocking-banner-visible")) {
+    e.preventDefault();
+    hideBlockingBanner();
+    return;
+  }
   e.preventDefault();
   void appWindow.hide();
 });
