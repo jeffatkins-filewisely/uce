@@ -882,6 +882,8 @@ fn start_window_drag(window: tauri::Window) -> Result<(), String> {
 
 #[tauri::command]
 fn focus_overlay(window: tauri::Window) -> Result<(), String> {
+    /* Keep UCE off the taskbar / “tray row” when surfacing the overlay (shops close the app if they see it). */
+    window.set_skip_taskbar(true).map_err(|e| e.to_string())?;
     window.show().map_err(|e| e.to_string())?;
     window.set_always_on_top(true).map_err(|e| e.to_string())?;
     window.set_focus().map_err(|e| e.to_string())
@@ -1254,6 +1256,7 @@ pub fn run() {
                 }
             }
             if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_skip_taskbar(true);
                 let _ = window.show();
                 let _ = window.set_resizable(false);
                 let h = app.handle().clone();
