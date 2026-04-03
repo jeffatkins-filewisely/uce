@@ -65,6 +65,8 @@ Output (default): `installer/Output/FileWisely-Setup.exe` (or next to the `.iss`
 
 **What it does:** installs payload to `C:\FileWisely\` (`install.ps1`, `uce\`, `pdf-printer\`), runs `install.ps1` elevated (admin) to create Incoming/App, printer steps, Startup shortcut, then adds Start Menu / optional Desktop icons pointing at `uce\UCE.exe` (present before `install.ps1` runs; `install.ps1` also copies to `App\`).
 
+**Skip printer on this run:** In the wizard, enable **“Skip PDF printer install”** (task `skipprinter`) so `install.ps1` runs with **`-SkipPrinter`** — UCE and folders are installed but Bullzip / **FileWisely Printer** are not recreated. Silent installs: pass `/TASKS="skipprinter"` (see Inno Setup “Tasks” docs). Default remains full printer setup.
+
 **EXE name:** If your Tauri binary is not `UCE.exe`, change the `[Icons]` `Filename` lines in `setup.iss` to match.
 
 **Wizard:** `setup.iss` sets **`DisableReadyPage`** and **`DisableFinishedPage`** for a minimal flow. Comment those out if shops need a clear “Setup finished” screen.
@@ -72,9 +74,10 @@ Output (default): `installer/Output/FileWisely-Setup.exe` (or next to the `.iss`
 ## After install
 
 1. **Business ID** — UCE stores tenant ID in its own app data (see in-app tenant setup). The installer writes `C:\FileWisely\App\filewisely-desktop.json` as an **IT reference**; staff still paste UUID in UCE if not baked into your branded build.
-2. **Printer name** — should match `FW_PRINTER_DISPLAY_NAME` in `src-tauri/src/config/print_config.rs` (default **FileWisely Printer**). Rename in *Settings → Bluetooth & devices → Printers & scanners* if needed.
-3. **Bullzip** — verify `settings.ini` under `%APPDATA%\Bullzip\PDF Printer\` points output to `C:\FileWisely\Incoming\` and disables prompts (see `pdf-printer/bullzip-settings.example.ini`).
-4. **Smoke test** — print from Notepad to **FileWisely Printer** → file lands in Incoming → UCE toast / upload (with CCC context + PDF mode).
+2. **PDF watch seed** — `install.ps1` runs **`seed-uce-pdf-watch.ps1`**, which writes **`C:\FileWisely\App\uce-pdf-watch.seed.json`** when missing. UCE **merges** those paths with per-user `%AppData%\com.filewisely.uce\uce-pdf-watch.json` (so elevated install does not need each user’s profile). Re-run `seed-uce-pdf-watch.ps1 -Force` after CCC paths change, or edit the JSON by hand. Org-wide lists can also come from the **watch policy** HTTP JSON (`pdf_watch_extra_dirs` / `pdf_watch_office_intercept_extra_dirs`) when your backend includes those keys.
+3. **Printer name** — should match `FW_PRINTER_DISPLAY_NAME` in `src-tauri/src/config/print_config.rs` (default **FileWisely Printer**). Rename in *Settings → Bluetooth & devices → Printers & scanners* if needed.
+4. **Bullzip** — verify `settings.ini` under `%APPDATA%\Bullzip\PDF Printer\` points output to `C:\FileWisely\Incoming\` and disables prompts (see `pdf-printer/bullzip-settings.example.ini`).
+5. **Smoke test** — print from Notepad to **FileWisely Printer** → file lands in Incoming → UCE toast / upload (with CCC context + PDF mode).
 
 ## Checklist (before roll-out)
 

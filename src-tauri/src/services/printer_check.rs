@@ -13,9 +13,15 @@ pub struct PrinterCheckResult {
 
 #[cfg(windows)]
 pub fn check_filewisely_printer() -> Result<PrinterCheckResult, String> {
+    /// Must match `crate::config::print_config::FW_PRINTER_DISPLAY_NAME` (Word/COM prints to this queue).
     const PS: &str = r#"
 $ErrorActionPreference = 'SilentlyContinue'
-$exact = $null -ne (Get-Printer -Name 'FileWisely Printer' -ErrorAction SilentlyContinue)
+$want = 'FileWisely Printer'
+# `Get-Printer -Name` can be finicky; enumerate and match case-insensitively (same as Settings list).
+$exact = $false
+foreach ($p in @(Get-Printer -ErrorAction SilentlyContinue)) {
+  if ($p.Name.Trim() -ieq $want) { $exact = $true; break }
+}
 $names = @(Get-Printer -ErrorAction SilentlyContinue |
   Where-Object { $_.Name -match '(?i)bullzip|filewisely|pdf printer' } |
   ForEach-Object { $_.Name })

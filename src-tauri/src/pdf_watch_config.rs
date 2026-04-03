@@ -17,8 +17,13 @@
 //! }
 //! ```
 //! Default folders (if they exist): user Downloads/Desktop/Documents/OneDrive, CCC-related
-//! `ProgramData` paths, classic `C:\\CCC\\WORKFILES`, `C:\\CCC` and `%LOCALAPPDATA%\\Temp\\CCC` when present,
-//! plus `extra_dirs` from config.
+//! `ProgramData` paths, classic `C:\\CCC\\WORKFILES`, `C:\\CCC`, **first-level subfolders** under
+//! `C:\\CCC` and under `%ProgramData%\\CCCInformation Services` (skipping obvious non-export dirs),
+//! `%LOCALAPPDATA%\\Temp\\CCC` when present, plus `extra_dirs` from config.
+//!
+//! **Machine seed:** `C:\\FileWisely\\App\\uce-pdf-watch.seed.json` (optional JSON with `extra_dirs` /
+//! `office_intercept_extra_dirs`) is **unioned** with per-user `uce-pdf-watch.json` so elevated installers
+//! can add paths without writing each user’s `%AppData%` profile.
 //!
 //! CCC ONE export locations are **per-shop** (Configure → Machine Settings → File Export / Directories).
 //! If PDFs land in a subfolder, add that path to `extra_dirs` — scanning is **non-recursive** (top-level
@@ -139,12 +144,62 @@ pub fn save_pdf_watch_config(app: &tauri::AppHandle, cfg: &PdfWatchConfig) -> Re
     std::fs::write(path, raw).map_err(|e| e.to_string())
 }
 
+/// Partial document merged at runtime with per-user [`PdfWatchConfig`] (see module docs).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+struct PdfWatchSeed {
+    #[serde(default)]
+    extra_dirs: Vec<String>,
+    #[serde(default)]
+    office_intercept_extra_dirs: Vec<String>,
+}
+
+fn load_pdf_watch_seed() -> PdfWatchSeed {
+    let path = print_config::filewisely_pdf_watch_seed_path();
+    if !path.exists() {
+        return PdfWatchSeed::default();
+    }
+    let raw = match fs::read_to_string(&path) {
+        Ok(r) => r,
+        Err(_) => return PdfWatchSeed::default(),
+    };
+    serde_json::from_str(&raw).unwrap_or_default()
+}
+
 fn push_if_exists(out: &mut Vec<PathBuf>, p: PathBuf) {
     if p.as_os_str().is_empty() {
         return;
     }
     if Path::new(&p).exists() {
         out.push(p);
+    }
+}
+
+/// Immediate child directories of `parent` (non-recursive). Skips names in `skip_lowercase_names`
+/// (compared case-insensitively) to avoid watching logs/temp under ProgramData.
+fn push_first_level_subdirs(out: &mut Vec<PathBuf>, parent: &Path, skip_lowercase_names: &[&str]) {
+    if !parent.exists() {
+        return;
+    }
+    let skip: HashSet<String> = skip_lowercase_names
+        .iter()
+        .map(|s| (*s).to_lowercase())
+        .collect();
+    let Ok(entries) = fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if skip.contains(&name.to_lowercase()) {
+            continue;
+        }
+        out.push(path);
     }
 }
 
@@ -236,7 +291,12 @@ pub fn office_intercept_watch_roots(app: &tauri::AppHandle) -> Vec<(PathBuf, &'s
     }
 
     let cfg = load_pdf_watch_config(app);
-    for s in &cfg.office_intercept_extra_dirs {
+    let seed = load_pdf_watch_seed();
+    for s in cfg
+        .office_intercept_extra_dirs
+        .iter()
+        .chain(seed.office_intercept_extra_dirs.iter())
+    {
         let p = PathBuf::from(s.trim());
         if !p.as_os_str().is_empty() {
             out.push((p, "office_intercept_extra"));
@@ -270,6 +330,7 @@ pub fn candidate_pdf_dirs(app: &tauri::AppHandle) -> Vec<PathBuf> {
     }
 
     let cfg = load_pdf_watch_config(app);
+    let seed = load_pdf_watch_seed();
     let mut dirs: Vec<PathBuf> = Vec::new();
 
     if let Ok(user_profile) = std::env::var("USERPROFILE") {
@@ -286,10 +347,16 @@ pub fn candidate_pdf_dirs(app: &tauri::AppHandle) -> Vec<PathBuf> {
         let cccis = PathBuf::from(pd).join("CCCInformation Services");
         push_if_exists(&mut dirs, cccis.clone());
         push_if_exists(&mut dirs, cccis.join("CCCONE"));
+        push_first_level_subdirs(
+            &mut dirs,
+            &cccis,
+            &["logs", "log", "temp", "tmp", "cache", "installer"],
+        );
     }
     push_if_exists(&mut dirs, PathBuf::from(r"C:\CCC\WORKFILES"));
     // CCC local export root (e.g. Change Request PDFs).
     push_if_exists(&mut dirs, PathBuf::from(r"C:\CCC"));
+    push_first_level_subdirs(&mut dirs, Path::new(r"C:\CCC"), &[]);
     if let Ok(la) = std::env::var("LOCALAPPDATA") {
         push_if_exists(&mut dirs, PathBuf::from(la).join("Temp").join("CCC"));
     }
@@ -301,7 +368,7 @@ pub fn candidate_pdf_dirs(app: &tauri::AppHandle) -> Vec<PathBuf> {
     }
 
     // Shop-configured paths: keep even if missing so watching starts when the folder is created later.
-    for s in &cfg.extra_dirs {
+    for s in cfg.extra_dirs.iter().chain(seed.extra_dirs.iter()) {
         let p = PathBuf::from(s.trim());
         if !p.as_os_str().is_empty() {
             dirs.push(p);

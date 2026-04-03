@@ -27,14 +27,20 @@
 //!       "priority": 5,
 //!       "cooldown_secs": 0
 //!     }
-//!   ]
+//!   ],
+//!   "pdf_watch_extra_dirs": ["D:\\Exports\\CCC PDFs"],
+//!   "pdf_watch_office_intercept_extra_dirs": []
 //! }
 //! ```
+//! - Optional **PDF watch lists** (when present, update per-user `uce-pdf-watch.json`):
+//!   - `pdf_watch_extra_dirs` (alias `pdfWatchExtraDirs`) — replaces `extra_dirs` when set (including `[]`).
+//!   - `pdf_watch_office_intercept_extra_dirs` (alias `pdfWatchOfficeInterceptExtraDirs`) — replaces `office_intercept_extra_dirs` when set.
 //! - Field aliases accepted: `trainedRules` → `trained`, `excludedRules` / `excludes` → `excluded`.
 //! - A successful sync **overwrites** both local rule files. Per-machine “Train (T)” edits are replaced
-//!   on the next sync unless you merge them server-side.
+//!   on the next sync unless you merge them server-side. PDF watch fields are applied only when the key is present in the JSON.
 
 use crate::memory_store::{load_memory, save_custom_rules, save_exclude_rules, save_memory};
+use crate::pdf_watch_config::{load_pdf_watch_config, save_pdf_watch_config};
 use crate::types::Rule;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -55,6 +61,12 @@ pub struct WatchPolicyDocument {
     pub trained: Vec<Rule>,
     #[serde(default, alias = "excludedRules", alias = "excludes")]
     pub excluded: Vec<Rule>,
+    /// When set, replaces `extra_dirs` in `uce-pdf-watch.json` (org-managed PDF folders).
+    #[serde(default, alias = "pdfWatchExtraDirs")]
+    pub pdf_watch_extra_dirs: Option<Vec<String>>,
+    /// When set, replaces `office_intercept_extra_dirs` in `uce-pdf-watch.json`.
+    #[serde(default, alias = "pdfWatchOfficeInterceptExtraDirs")]
+    pub pdf_watch_office_intercept_extra_dirs: Option<Vec<String>>,
 }
 
 pub fn apply_watch_policy_to_disk(app: &AppHandle, doc: &WatchPolicyDocument) -> Result<(), String> {
@@ -67,6 +79,20 @@ pub fn apply_watch_policy_to_disk(app: &AppHandle, doc: &WatchPolicyDocument) ->
     }
     memory.approved_contexts_last_loaded_unix_ms = Some(now_unix_ms());
     save_memory(app, &memory)?;
+
+    let mut pdf_cfg = load_pdf_watch_config(app);
+    let mut pdf_touch = false;
+    if let Some(ref dirs) = doc.pdf_watch_extra_dirs {
+        pdf_cfg.extra_dirs = dirs.clone();
+        pdf_touch = true;
+    }
+    if let Some(ref dirs) = doc.pdf_watch_office_intercept_extra_dirs {
+        pdf_cfg.office_intercept_extra_dirs = dirs.clone();
+        pdf_touch = true;
+    }
+    if pdf_touch {
+        save_pdf_watch_config(app, &pdf_cfg)?;
+    }
     Ok(())
 }
 

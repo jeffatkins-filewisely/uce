@@ -309,6 +309,17 @@ try {
     Write-Host ""
     Write-Host "Wrote reference config: $cfgPath"
 
+    # --- Machine-local PDF watch seed (merged in UCE with per-user uce-pdf-watch.json) ---
+    $seedPs1 = Join-Path $Root "seed-uce-pdf-watch.ps1"
+    if (Test-Path -LiteralPath $seedPs1) {
+        try {
+            & $seedPs1 -OutPath (Join-Path $AppDir "uce-pdf-watch.seed.json")
+        }
+        catch {
+            Write-Warning "seed-uce-pdf-watch.ps1 failed: $_"
+        }
+    }
+
     # --- Startup shortcut ---
     $exe = Get-ChildItem $AppDir -Filter "*.exe" -Recurse -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -match '(?i)(uce|filewisely|sidekick|ccc)' } |

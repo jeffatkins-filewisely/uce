@@ -33,7 +33,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tokio::time::sleep;
 use types::{RecentMemory, Rule, WatchContext};
 
@@ -888,6 +888,54 @@ fn focus_overlay(window: tauri::Window) -> Result<(), String> {
 }
 
 /// Resize overlay using native APIs (WebView2 + `setSize` from JS is unreliable for height).
+/// Windows-only: real `MessageBox` so the alert is never clipped by the tiny overlay WebView (38×38).
+#[cfg(windows)]
+fn printer_severe_native_message_box() {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW;
+    const MB_OK: u32 = 0;
+    const MB_ICONWARNING: u32 = 0x30;
+    const MB_SETFOREGROUND: u32 = 0x0001_0000;
+    let title: Vec<u16> = OsStr::new("UCE — Printer issue")
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let body = "FileWisely Printer was not detected (exact name match).\r\n\r\n\
+UCE may try to repair automatically. If this keeps appearing, run the FileWisely installer \
+or reinstall the PDF printer.\r\n\r\n\
+Click OK to dismiss.";
+    let text: Vec<u16> = OsStr::new(body)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            title.as_ptr(),
+            MB_OK | MB_ICONWARNING | MB_SETFOREGROUND,
+        );
+    }
+}
+
+#[tauri::command]
+async fn uce_printer_severe_native_alert() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        tokio::task::spawn_blocking(|| {
+            printer_severe_native_message_box();
+        })
+        .await
+        .map_err(|e| format!("printer alert: {e}"))?;
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        Err("native printer alert only on Windows".to_string())
+    }
+}
+
 #[tauri::command]
 fn uce_set_overlay_logical_size(window: tauri::Window, width: u32, height: u32) -> Result<(), String> {
     use tauri::LogicalSize;
@@ -996,7 +1044,7 @@ fn clear_ccc_excludes_for_current_window(app: tauri::AppHandle) -> Result<String
     clear_exclude_rules_for_current_context(&app)
 }
 
-/// HTTPS GET JSON `{ version?, trained: Rule[], excluded: Rule[] }` — replaces local watch lists.
+/// HTTPS GET JSON `{ version?, trained, excluded, pdf_watch_extra_dirs?, pdf_watch_office_intercept_extra_dirs? }` — replaces local watch lists (and optional PDF watch fields when present).
 #[tauri::command]
 async fn sync_watch_policy_from_remote(
     app: tauri::AppHandle,
@@ -1148,11 +1196,22 @@ async fn uce_post_ro_status(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let global_shortcut_plugin = tauri_plugin_global_shortcut::Builder::new()
-        .with_shortcuts(["ctrl+shift+w"])
-        .expect("UCE: register ctrl+shift+w for CCC Change Request Word close")
-        .with_handler(|_, _, event| {
+        .with_shortcuts(["ctrl+shift+w", "ctrl+shift+u"])
+        .expect("UCE: register ctrl+shift+w (CCC Word) and ctrl+shift+u (show dock)")
+        .with_handler(|app, shortcut, event| {
             use tauri_plugin_global_shortcut::ShortcutState;
-            if event.state == ShortcutState::Pressed {
+            if event.state != ShortcutState::Pressed {
+                return;
+            }
+            let key = format!("{shortcut}");
+            let lower = key.to_lowercase();
+            if lower.contains("shift+u") {
+                if let Err(e) = app.emit("uce-show-dock", ()) {
+                    eprintln!("[UCE] emit uce-show-dock: {e}");
+                }
+                return;
+            }
+            if lower.contains("shift+w") {
                 match services::ccc_cr_word_autoclose::manual_close_armed_word() {
                     Ok(m) => eprintln!("[UCE][ccc-cr] hotkey_ok {}", m),
                     Err(e) => eprintln!("[UCE][ccc-cr] hotkey_err {}", e),
@@ -1186,7 +1245,7 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
                 let _ = window.set_always_on_top(true);
-                let _ = window.set_skip_taskbar(false);
+                let _ = window.set_skip_taskbar(true);
                 let _ = window.set_resizable(false);
                 let h = app.handle().clone();
                 apply_startup_window_position(&h, &window);
@@ -1234,6 +1293,7 @@ pub fn run() {
             uce_open_url,
             uce_copy_into_incoming,
             uce_check_filewisely_printer,
+            uce_printer_severe_native_alert,
             repair_printer,
             uce_office_print_to_filewisely,
             uce_post_ro_status,

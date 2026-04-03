@@ -44,10 +44,13 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop icon for UCE"; GroupDescription: "Shortcuts:"; Flags: unchecked
+; When checked, install.ps1 does not run Bullzip / FileWisely Printer steps (UCE + folders only). Use if you removed the printer and do not want it recreated.
+Name: "skipprinter"; Description: "Skip PDF &printer install (no Bullzip / FileWisely Printer)"; GroupDescription: "Options:"; Flags: unchecked
 
 [Files]
 ; Payload must live next to this .iss under installer\
 Source: "install.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "seed-uce-pdf-watch.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "setup-filewisely-printer.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "verify-filewisely-printer.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "config.json.example"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
@@ -55,11 +58,20 @@ Source: "uce\*"; DestDir: "{app}\uce"; Flags: recursesubdirs createallsubdirs ig
 Source: "pdf-printer\*"; DestDir: "{app}\pdf-printer"; Flags: recursesubdirs createallsubdirs ignoreversion skipifsourcedoesntexist
 
 [Run]
-; Runs after files are installed to {app} (= C:\FileWisely). install.ps1 copies uce → C:\FileWisely\App and configures printer.
+; Runs after files are installed to {app} (= C:\FileWisely). install.ps1 copies uce → C:\FileWisely\App and configures printer unless Task skipprinter.
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
-  Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\install.ps1"" -BusinessId ""{#MyBusinessId}"""; \
+  Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\install.ps1"" -BusinessId ""{#MyBusinessId}""{code:GetInstallPs1ExtraArgs}"; \
   StatusMsg: "Installing printer and UCE..."; \
   Flags: runhidden waituntilterminated
+
+[Code]
+function GetInstallPs1ExtraArgs: String;
+begin
+  if IsTaskSelected('skipprinter') then
+    Result := ' -SkipPrinter'
+  else
+    Result := '';
+end;
 
 [Icons]
 ; Icons are created AFTER [Files] but BEFORE [Run]. install.ps1 copies uce → App\ later, so point at uce\UCE.exe (exists after extract). Tauri productName is ""UCE"".

@@ -475,8 +475,11 @@ async function logFwParitySummary() {
     `[UCE][parity] local_fw_pdf_count=${local_fw_pdf_count} queued=${queued} uploaded=${uploaded} pending=${pending} failed=${failed}`
   );
 }
-/** Blocking banner + severe printer modal after sustained unhealthy state. */
+/** Printer native alert / severe path: only after sustained missing printer. */
 const HEALTH_HARD_ALERT_MS = 120_000;
+/** Health detail toast: much sooner than the old top banner wait so users see what to fix without a strip over Chrome. */
+const HEALTH_ATTENTION_TOAST_MS = 25_000;
+/** Optional: uce_suppress_printer_severe_modal; uce_suppress_blocking_health_banner — suppresses health toasts (no top banner). */
 const HEALTH_BANNER_HEIGHT_LOGICAL = 34;
 const UCE_EVENT_LOG_KEY = "uce_event_log_v1";
 const UCE_EVENT_LOG_MAX = 500;
@@ -485,6 +488,33 @@ const UCE_EVENT_LOG_MAX = 500;
 function isUceRoDebugRawEnabled() {
   try {
     return import.meta.env.DEV || localStorage.getItem("uce_ro_debug") === "1";
+  } catch {
+    return false;
+  }
+}
+
+/** Skip the full-screen “Printer issue detected” modal (e.g. dev machine without FileWisely Printer). */
+function isUceSuppressPrinterSevereModal() {
+  try {
+    return localStorage.getItem("uce_suppress_printer_severe_modal") === "1";
+  } catch {
+    return false;
+  }
+}
+
+/** Hide the red “needs attention” banner above the dock; health strip dot may still warn. */
+function isUceSuppressBlockingHealthBanner() {
+  try {
+    return localStorage.getItem("uce_suppress_blocking_health_banner") === "1";
+  } catch {
+    return false;
+  }
+}
+
+/** Windows overlay WebView is ~38×38 — HTML “printer severe” UI only ever clips; use native MessageBox. */
+function isWindowsUceClient() {
+  try {
+    return /Windows/i.test(navigator.userAgent);
   } catch {
     return false;
   }
@@ -1167,6 +1197,25 @@ html, body {
 .uce-toolbar > button,
 .uce-toolbar > .uce-health {
   pointer-events: auto;
+}
+
+/* Minimal footprint when dock chrome is hidden (Ctrl+Shift+U to show). */
+#app.uce-dock-chrome-hidden #uceDock .uce-toolbar {
+  display: none !important;
+}
+
+/* QA row is a sibling of .uce-toolbar — hide it too or a skinny “QA” strip remains (dev / uce_qa_tools). */
+#app.uce-dock-chrome-hidden #uceDock .uce-qa-bar {
+  display: none !important;
+}
+
+/*
+  With only display:none on the toolbar, #uceDock can still paint as an empty flex column (dark sliver /
+  “black tile” at the anchor). Hide the whole dock when no toast layout needs it.
+  When uce-toast-open, keep #uceDock in tree for toolbar row reserve under the toast.
+*/
+#app.uce-dock-chrome-hidden:not(.uce-toast-open):not(.uce-debug-open) #uceDock {
+  display: none !important;
 }
 
 .uce-debug-sheet,
@@ -2099,19 +2148,31 @@ html, body {
 .uce-blocking-banner {
   box-sizing: border-box;
   width: max-content;
-  max-width: min(380px, calc(100vw - 8px));
+  max-width: min(420px, calc(100vw - 8px));
   margin: 0 0 4px;
   padding: 8px 10px;
   border-radius: 6px;
+  background-color: #991b1b;
   background: linear-gradient(180deg, #b91c1c 0%, #991b1b 100%);
   border: 1px solid rgba(254, 202, 202, 0.45);
-  color: #fef2f2;
+  color: #ffffff;
+  color-scheme: light;
   font-size: 11px;
   font-weight: 600;
   line-height: 1.35;
   text-align: center;
   font-family: "Segoe UI", sans-serif;
   flex-shrink: 0;
+  white-space: normal;
+  cursor: help;
+}
+
+/* WebView2: host styles can darken banner text; keep message readable on red. */
+.uce-blocking-banner-text {
+  display: block;
+  color: #ffffff !important;
+  -webkit-text-fill-color: #ffffff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85), 0 0 1px rgba(0, 0, 0, 1);
 }
 
 /* When RO/debug panel is open, #app.uce-debug-open owns column layout — do not pin toolbar to bottom. */
@@ -2139,6 +2200,19 @@ html, body {
   flex-shrink: 0;
 }
 
+/* While open, force #app to fill the enlarged window — fixed children do not expand inline-block #app,
+   which otherwise leaves the WebView at ~38×38 and clips the modal (no visible OK). */
+#app.uce-printer-severe-open {
+  display: block;
+  width: 420px;
+  height: 280px;
+  min-width: 420px;
+  min-height: 280px;
+  max-width: 100vw;
+  max-height: 100vh;
+  box-sizing: border-box;
+}
+
 .uce-printer-severe-modal {
   position: fixed;
   inset: 0;
@@ -2153,6 +2227,13 @@ html, body {
 
 .uce-printer-severe-modal[hidden] {
   display: none !important;
+}
+
+/* Set on <html> at startup — never paint HTML printer alert on Windows (native dialog only). */
+html.uce-runtime-windows #ucePrinterSevereModal {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
 }
 
 .uce-printer-severe-inner {
@@ -2196,6 +2277,15 @@ html, body {
 
 .uce-printer-severe-ok:hover {
   filter: brightness(1.06);
+}
+
+.uce-printer-severe-esc-hint {
+  margin: 10px 0 0;
+  font-size: 11px;
+  line-height: 1.3;
+  color: #64748b;
+  text-align: center;
+  font-family: "Segoe UI", sans-serif;
 }
 
 #app.uce-printer-severe-open #uceDock .uce-toolbar,
@@ -2261,7 +2351,7 @@ html, body {
 </style>
 
 <div id="uceBlockingBanner" class="uce-blocking-banner" hidden role="alert" aria-live="assertive">
-  <span class="uce-blocking-banner-text">⚠️ FileWisely needs attention — documents may not be captured</span>
+  <span id="uceBlockingBannerText" class="uce-blocking-banner-text">⚠️ FileWisely needs attention — documents may not be captured</span>
 </div>
 <div id="uceDebugSheet" class="uce-debug-sheet" hidden aria-hidden="true"></div>
 <div id="uceDock">
@@ -2308,6 +2398,7 @@ html, body {
     <h2 class="uce-printer-severe-title">Printer issue detected</h2>
     <p class="uce-printer-severe-hint">UCE is attempting automatic repair. If this persists, run the FileWisely installer or reinstall the PDF printer.</p>
     <button type="button" class="uce-printer-severe-ok" id="ucePrinterSevereOk">OK</button>
+    <p class="uce-printer-severe-esc-hint">Esc or click outside to dismiss</p>
   </div>
 </div>
 `;
@@ -2320,8 +2411,14 @@ const uceTrainBtn = document.getElementById("uceTrainBtn");
 const uceSettingsBtn = document.getElementById("uceSettingsBtn");
 const uceHealthStrip = document.getElementById("uceHealthStrip");
 const uceBlockingBanner = document.getElementById("uceBlockingBanner");
+const uceBlockingBannerText = document.getElementById("uceBlockingBannerText");
 const ucePrinterSevereModal = document.getElementById("ucePrinterSevereModal");
+const ucePrinterSevereOkBtn = document.getElementById("ucePrinterSevereOk");
 const flashEl = document.getElementById("flash");
+
+if (isWindowsUceClient()) {
+  document.documentElement.classList.add("uce-runtime-windows");
+}
 const toastEl = document.getElementById("toast");
 const debugSheetEl = document.getElementById("uceDebugSheet");
 const uceQaBar = document.getElementById("uceQaBar");
@@ -2397,10 +2494,11 @@ async function showTenantSetupDialog() {
       console.error("tenant setup resize (2):", e2);
     }
   }
+  /* Class before delays so getCompactWindowSize() keeps 420×280 if anything resizes the window. */
+  appEl.classList.add("uce-tenant-setup-open");
   await delayToastLayout(80);
   await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
   overlay.hidden = false;
-  appEl.classList.add("uce-tenant-setup-open");
   input.value = "";
   errEl.hidden = true;
   errEl.textContent = "";
@@ -2519,6 +2617,53 @@ function applyTrainButtonVisibility() {
   const on = getTrainButtonVisible();
   uceTrainBtn.classList.toggle("uce-hidden", !on);
   uceTrainBtn.setAttribute("aria-hidden", on ? "false" : "true");
+  updateSettingsButtonTitles();
+}
+
+/** `localStorage` key: not `"0"` → toolbar hidden (default). Set `"0"` to show toolbar on launch. */
+const UCE_DOCK_CHROME_HIDDEN_KEY = "uce_dock_chrome_hidden";
+/** `"1"` → when a watched target matches (`action_allowed`), focus UCE (optional; can annoy). */
+const UCE_FOCUS_ON_TARGET_KEY = "uce_focus_on_target_match";
+
+function getDockChromeHiddenPreference() {
+  try {
+    return localStorage.getItem(UCE_DOCK_CHROME_HIDDEN_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}
+
+function setDockChromeHidden(hidden) {
+  try {
+    localStorage.setItem(UCE_DOCK_CHROME_HIDDEN_KEY, hidden ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+  appEl.classList.toggle("uce-dock-chrome-hidden", hidden);
+  updateSettingsButtonTitles();
+  void setCompactWindowSize();
+  logEvent("dock_chrome", hidden ? "hidden" : "visible");
+  console.info(`[UCE] dock chrome ${hidden ? "hidden" : "visible"}`);
+}
+
+function applyDockChromeFromStorage() {
+  const hidden = getDockChromeHiddenPreference();
+  appEl.classList.toggle("uce-dock-chrome-hidden", hidden);
+  updateSettingsButtonTitles();
+}
+
+function updateSettingsButtonTitles() {
+  if (!uceSettingsBtn) return;
+  if (getDockChromeHiddenPreference()) {
+    uceSettingsBtn.title =
+      "Toolbar hidden — Ctrl+Shift+U to show. When visible: click = training (T); Ctrl+click = hide toolbar.";
+    uceSettingsBtn.setAttribute(
+      "aria-label",
+      "Toolbar hidden; use Ctrl+Shift+U to show"
+    );
+    return;
+  }
+  const on = getTrainButtonVisible();
   uceSettingsBtn.title = on
     ? "Hide training (T) button — use when onboarding is done"
     : "Show training (T) button — use for a new shop, new system, or new sites";
@@ -2526,6 +2671,14 @@ function applyTrainButtonVisibility() {
     "aria-label",
     on ? "Hide CCC training button" : "Show CCC training button"
   );
+}
+
+function getUceFocusOnTargetMatchEnabled() {
+  try {
+    return localStorage.getItem(UCE_FOCUS_ON_TARGET_KEY) === "1";
+  } catch {
+    return false;
+  }
 }
 
 /** Dev, `VITE_UCE_QA=1`, or `localStorage uce_qa_tools=1` — shows the QA dock row (automation API is always available). */
@@ -2614,7 +2767,36 @@ function logOverlayHitDebug(logicalW, logicalH, phase) {
   });
 }
 
+/** Must match `uce_set_overlay_logical_size` used for full-screen overlays in main.rs. */
+const UCE_OVERLAY_MODAL_LOGICAL = { width: 420, height: 280 };
+
 function getCompactWindowSize() {
+  /* When these are open, `shouldMeasureDomForCompactWindow` is false — without this branch,
+     we fall through to the toolbar formula (~38px tall) and the next setCompactWindowSize()
+     shrinks the native window and clips the modal (black box with a line of body text). */
+  if (appEl.classList.contains("uce-printer-severe-open")) {
+    return { ...UCE_OVERLAY_MODAL_LOGICAL };
+  }
+  if (appEl.classList.contains("uce-tenant-setup-open")) {
+    return { ...UCE_OVERLAY_MODAL_LOGICAL };
+  }
+  if (getDockChromeHiddenPreference() && shouldMeasureDomForCompactWindow()) {
+    if (
+      healthBannerVisible &&
+      uceBlockingBanner &&
+      !uceBlockingBanner.hidden
+    ) {
+      void uceBlockingBanner.offsetWidth;
+      const br = uceBlockingBanner.getBoundingClientRect();
+      const w = Math.max(38, Math.ceil(br.width));
+      const h = Math.max(38, Math.ceil(br.height));
+      logOverlayHitDebug(w, h, "getCompact(chrome-hidden+banner)");
+      return { width: w, height: h };
+    }
+    const out = { width: 38, height: 38 };
+    logOverlayHitDebug(out.width, out.height, "getCompact(chrome-hidden)");
+    return out;
+  }
   if (shouldMeasureDomForCompactWindow() && uceDockEl) {
     void uceDockEl.offsetWidth;
     void appEl.offsetWidth;
@@ -2692,7 +2874,11 @@ let healthPrinterExact = false;
 /** First time printer missing / core unhealthy (for sustained alerts). */
 let printerMissingSince = null;
 let coreUnhealthySince = null;
+/** Dedupe health toasts — same detail string does not repeat until healthy or detail changes. */
+let lastHealthAttentionToastSignature = "";
 let lastEdgePrinterMissing = false;
+/** Edge-trigger focus when `uce_focus_on_target_match` and `action_allowed` first becomes true. */
+let lastTargetMatchFocusArmed = false;
 /** User dismissed the severe printer modal; show again only after printer recovers. */
 let printerModalDismissedUntilOk = false;
 let autoPdfBusy = false;
@@ -5343,6 +5529,14 @@ async function refreshContextState() {
     }
     const isActive = ctx?.action_allowed === true;
     setUiState(isActive ? "active" : "quiet");
+    if (getUceFocusOnTargetMatchEnabled() && isActive) {
+      if (!lastTargetMatchFocusArmed) {
+        lastTargetMatchFocusArmed = true;
+        void invoke("focus_overlay").catch(() => {});
+      }
+    } else {
+      lastTargetMatchFocusArmed = false;
+    }
     const now = Date.now();
     const signals = getUceRecognitionSignals();
     const rawDetected = detectUceContext(ctx, signals);
@@ -5378,6 +5572,7 @@ async function refreshContextState() {
     void updateUceHealthStrip();
   } catch (error) {
     console.error("Context refresh error:", error);
+    lastTargetMatchFocusArmed = false;
     setUiState("quiet");
     clearRoLevelClasses();
     lastUceDecisionReasons = [];
@@ -5604,6 +5799,16 @@ uceTrainBtn.addEventListener("contextmenu", (e) => {
 
 uceSettingsBtn.addEventListener("click", (e) => {
   e.stopPropagation();
+  if (e.ctrlKey && !getDockChromeHiddenPreference()) {
+    setDockChromeHidden(true);
+    showToast("Toolbar hidden — press Ctrl+Shift+U to show again.", "success", 4500);
+    return;
+  }
+  if (getDockChromeHiddenPreference()) {
+    setDockChromeHidden(false);
+    showToast("Toolbar shown.", "success", 2800);
+    return;
+  }
   const next = !getTrainButtonVisible();
   setTrainButtonVisible(next);
   showToast(
@@ -5619,7 +5824,9 @@ uceSettingsBtn.addEventListener("contextmenu", (e) => {
   e.preventDefault();
 });
 
+applyDockChromeFromStorage();
 applyTrainButtonVisibility();
+void setCompactWindowSize();
 initUceQaAutomation();
 
 uceRoPanelBtn.addEventListener("click", (e) => {
@@ -5846,15 +6053,25 @@ function hideBlockingBanner() {
   void setCompactWindowSize();
 }
 
-function showBlockingBanner() {
-  if (!uceBlockingBanner) return;
-  if (uceBlockingBanner.hidden) {
-    logEvent("attention_banner_shown", "documents may not be captured");
+/** One toast when a problem persists (~25s). No persistent strip over the editor. */
+function maybeHealthAttentionToast(printerOk, uploadsOk, attentionDetail) {
+  if (isUceSuppressBlockingHealthBanner()) return;
+  if (printerOk && uploadsOk) {
+    lastHealthAttentionToastSignature = "";
+    return;
   }
-  uceBlockingBanner.hidden = false;
-  healthBannerVisible = true;
-  appEl.classList.add("uce-blocking-banner-visible");
-  void setCompactWindowSize();
+  const now = Date.now();
+  if (
+    coreUnhealthySince === null ||
+    now - coreUnhealthySince < HEALTH_ATTENTION_TOAST_MS
+  ) {
+    return;
+  }
+  const sig = attentionDetail || "needs attention";
+  if (sig === lastHealthAttentionToastSignature) return;
+  lastHealthAttentionToastSignature = sig;
+  logEvent("health_attention_toast", sig);
+  showToast(`⚠️ ${sig}`, "warning", 16000);
 }
 
 async function hidePrinterSevereModal(fromHealthyRecovery = false) {
@@ -5872,17 +6089,65 @@ async function hidePrinterSevereModal(fromHealthyRecovery = false) {
 
 async function showPrinterSevereModal() {
   if (!ucePrinterSevereModal || printerModalDismissedUntilOk) return;
+  if (isUceSuppressPrinterSevereModal()) return;
   if (appEl.classList.contains("uce-tenant-setup-open")) return;
   const firstOpen = ucePrinterSevereModal.hidden;
-  ucePrinterSevereModal.hidden = false;
-  appEl.classList.add("uce-printer-severe-open");
-  if (firstOpen) {
-    logEvent("printer_severe_alert", "Printer missing > 2m — auto-repair");
+  /* Windows: native MessageBox only. Never show the HTML modal — any invoke failure still must not
+     paint the webview (clips to “…the FileWisely…”). Non-Windows: in-app modal below. */
+  if (isWindowsUceClient()) {
+    try {
+      await invoke("uce_printer_severe_native_alert");
+      printerModalDismissedUntilOk = true;
+      if (firstOpen) {
+        logEvent("printer_severe_alert", "Printer missing — native dialog dismissed");
+      }
+    } catch (e) {
+      console.error("[UCE] native printer alert failed:", e);
+      printerModalDismissedUntilOk = true;
+      showToast(
+        "FileWisely Printer not detected. Run the FileWisely installer or rename your PDF printer to match. (Details in console.)",
+        "warning",
+        12000
+      );
+      if (firstOpen) {
+        logEvent("printer_severe_alert", "Printer missing — native dialog failed; toast only");
+      }
+    }
+    return;
   }
+  /* Same as tenant setup: resize *before* showing. At 38×38 (dock hidden) a visible-first modal
+     clips to a random slice (e.g. “…repair. If this persists…”) — black box fragment on top. */
   try {
     await invoke("uce_set_overlay_logical_size", { width: 420, height: 280 });
   } catch (e) {
-    console.error("Printer severe modal resize:", e);
+    console.error("Printer severe modal resize (1):", e);
+    try {
+      await invoke("uce_set_overlay_logical_size", { width: 420, height: 280 });
+    } catch (e2) {
+      console.error("Printer severe modal resize (2):", e2);
+    }
+  }
+  /* Before delays / unhide — else setCompactWindowSize() can shrink to toolbar formula and clip the modal. */
+  appEl.classList.add("uce-printer-severe-open");
+  await delayToastLayout(80);
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  ucePrinterSevereModal.hidden = false;
+  /* Re-apply compact sizing through the same path as the rest of the app — avoids a 38×38 webview
+     leaving only a clipped fragment of this modal (no visible OK). */
+  try {
+    await setCompactWindowSize();
+  } catch (e) {
+    console.error("Printer severe modal setCompactWindowSize:", e);
+  }
+  requestAnimationFrame(() => {
+    try {
+      ucePrinterSevereOkBtn?.focus({ preventScroll: true });
+    } catch (_) {
+      ucePrinterSevereOkBtn?.focus();
+    }
+  });
+  if (firstOpen) {
+    logEvent("printer_severe_alert", "Printer missing > 2m — auto-repair");
   }
 }
 
@@ -5909,13 +6174,6 @@ function syncHardFailureUi(printerOk, uploadsOk) {
   }
 
   if (
-    coreUnhealthySince !== null &&
-    now - coreUnhealthySince >= HEALTH_HARD_ALERT_MS
-  ) {
-    showBlockingBanner();
-  }
-
-  if (
     printerOk ||
     printerMissingSince === null ||
     now - printerMissingSince < HEALTH_HARD_ALERT_MS
@@ -5927,9 +6185,26 @@ function syncHardFailureUi(printerOk, uploadsOk) {
   }
 }
 
-document.getElementById("ucePrinterSevereOk")?.addEventListener("click", () => {
+ucePrinterSevereOkBtn?.addEventListener("click", () => {
   void hidePrinterSevereModal(false);
 });
+
+ucePrinterSevereModal?.addEventListener("click", (e) => {
+  if (e.target === ucePrinterSevereModal) {
+    void hidePrinterSevereModal(false);
+  }
+});
+
+document.addEventListener(
+  "keydown",
+  (e) => {
+    if (e.key !== "Escape") return;
+    if (!ucePrinterSevereModal || ucePrinterSevereModal.hidden) return;
+    e.preventDefault();
+    void hidePrinterSevereModal(false);
+  },
+  true
+);
 
 async function refreshPrinterHealthFromBackend() {
   try {
@@ -5963,6 +6238,32 @@ function pdfPipelineStale() {
   return Date.now() - lastAutoPdfUploadAt > 120_000;
 }
 
+/** Short copy for the red banner so users see what failed (not just “needs attention”). */
+function buildBlockingBannerDetail(printerOk, uploadsOk, up, stale) {
+  if (printerOk && uploadsOk) {
+    return "All checks passed";
+  }
+  const bits = [];
+  if (!printerOk) {
+    bits.push(
+      'No queue named "FileWisely Printer" — rename in Windows Printers (must match exactly, two words)'
+    );
+  }
+  if (!uploadsOk) {
+    if (stale) {
+      bits.push(
+        "No recent PDF auto-upload — open CCC/PDF context or check C:\\FileWisely\\Incoming"
+      );
+    } else if (!up.ok) {
+      bits.push(up.label || "Upload issue");
+    }
+  }
+  if (bits.length === 0) {
+    return "Capture may be blocked — hover the ● on the dock for details";
+  }
+  return bits.join(" · ");
+}
+
 async function updateUceHealthStrip() {
   if (!uceHealthStrip) return;
   if (Date.now() - lastPrinterHealthFetch > 15_000) {
@@ -5985,12 +6286,13 @@ async function updateUceHealthStrip() {
     ? "Uploads (PDF): delayed — no recent auto-send (check folder / context)"
     : `Uploads: ${up.label}`;
   const uceLine = "UCE: running";
+  const bannerDetail = buildBlockingBannerDetail(printerOk, uploadsOk, up, stale);
   uceHealthStrip.title = `${printerLine}\n${uceLine}\n${uploadLine}`;
   uceHealthStrip.setAttribute(
     "aria-label",
     printerOk && uploadsOk
       ? "System healthy"
-      : "Needs attention — see tooltip"
+      : `Needs attention: ${bannerDetail} — hover the status dot for lines`
   );
   uceHealthStrip.classList.remove("uce-health--warn", "uce-health--bad");
   if (!printerOk) {
@@ -5998,7 +6300,28 @@ async function updateUceHealthStrip() {
   } else if (!uploadsOk) {
     uceHealthStrip.classList.add("uce-health--warn");
   }
+
+  const bannerMsg = `⚠️ ${bannerDetail}`;
+  if (uceBlockingBannerText) {
+    uceBlockingBannerText.textContent = bannerMsg;
+  }
+  if (uceBlockingBanner) {
+    uceBlockingBanner.title = `${printerLine}\n${uceLine}\n${uploadLine}`;
+    uceBlockingBanner.setAttribute("aria-label", bannerMsg);
+  }
+
   syncHardFailureUi(printerOk, uploadsOk);
+  maybeHealthAttentionToast(printerOk, uploadsOk, bannerDetail);
+  if (isUceSuppressBlockingHealthBanner()) {
+    hideBlockingBanner();
+  }
+  if (
+    isUceSuppressPrinterSevereModal() &&
+    ucePrinterSevereModal &&
+    !ucePrinterSevereModal.hidden
+  ) {
+    void hidePrinterSevereModal(false);
+  }
 }
 
 async function selfHealPrinter() {
@@ -6149,6 +6472,15 @@ async function uceRuntimePrinterCheck() {
   } catch (e) {
     console.warn("[UCE] uce-filewisely-send-doc-prompt listener:", e);
   }
+  try {
+    await listen("uce-show-dock", () => {
+      setDockChromeHidden(false);
+      void invoke("focus_overlay").catch(() => {});
+      console.info("[UCE] uce-show-dock: toolbar shown (Ctrl+Shift+U)");
+    });
+  } catch (e) {
+    console.warn("[UCE] uce-show-dock listener:", e);
+  }
   contextPollTimer = setInterval(refreshContextState, CONTEXT_POLL_MS);
   autoPdfTimer = setInterval(() => void checkAutoPdfUpload("poll"), AUTO_PDF_POLL_MS);
   setInterval(() => void selfHealPrinter(), SELF_HEAL_PRINTER_MS);
@@ -6240,3 +6572,19 @@ window.__uceUpdaterScheduleInfo = () => ({
  * Open DevTools → Console on an installed build and run: `await window.__uceCheckUpdate()`
  */
 window.__uceCheckUpdate = () => runUceAppUpdateCheck({ force: true });
+/** Toolbar hidden by default; `localStorage uce_dock_chrome_hidden="0"` shows it on launch. */
+window.__uceGetDockChromeHidden = () => getDockChromeHiddenPreference();
+window.__uceSetDockChromeHidden = (hidden) => {
+  setDockChromeHidden(!!hidden);
+  return getDockChromeHiddenPreference();
+};
+/** `"1"` = focus UCE when a watched target matches (`action_allowed`). */
+window.__uceGetFocusOnTargetMatch = () => getUceFocusOnTargetMatchEnabled();
+window.__uceSetFocusOnTargetMatch = (on) => {
+  try {
+    localStorage.setItem(UCE_FOCUS_ON_TARGET_KEY, on ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+  return getUceFocusOnTargetMatchEnabled();
+};
