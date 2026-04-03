@@ -6353,17 +6353,35 @@ async function selfHealPrinter(fromStartup = false) {
     }
     lastPrinterRepairAttemptAt = now;
     console.warn("[UCE] Printer missing — attempting repair (silent PDF installer + rename)");
+    showToast(
+      "Installing FileWisely PDF printer… If Windows asks for permission, click Yes.",
+      "info",
+      0
+    );
     const rep = await invoke("repair_printer");
+    dismissToast();
     if (rep?.ok) {
       console.info("[UCE] Printer repair:", rep.message);
       logEvent("printer_repaired", rep.message || "success");
+      showToast("FileWisely Printer is installed and ready.", "success", 6500);
     } else {
-      console.warn("[UCE] Printer repair:", rep?.message);
-      logEvent("printer_repair_failed", rep?.message || "unknown");
+      const msg =
+        rep?.message ||
+        "Printer could not be installed automatically. Install Bullzip manually or check C:\\FileWisely\\pdf-printer.";
+      console.warn("[UCE] Printer repair:", msg);
+      logEvent("printer_repair_failed", msg);
+      showToast(msg, "warning", 16000);
     }
     await refreshPrinterHealthFromBackend();
   } catch (e) {
+    try {
+      dismissToast();
+    } catch (_) {
+      /* ignore */
+    }
+    const errMsg = typeof e === "string" ? e : e?.message || String(e);
     console.error("[UCE] selfHealPrinter:", e);
+    showToast(`Printer repair failed: ${errMsg}`, "error", 14000);
   }
   await updateUceHealthStrip();
 }
@@ -6422,6 +6440,12 @@ async function uceRuntimePrinterCheck() {
   try {
     await initTenantContext();
     await initUceDeepLinkListeners();
+    await uceRuntimePrinterCheck();
+    /* Repair must not wait on tenant UUID — schedule before setup dialog so driver install can run in parallel. */
+    setTimeout(
+      () => void selfHealPrinter(true),
+      PRINTER_STARTUP_REPAIR_DELAY_MS
+    );
     if (!getBusinessId()) {
       await showTenantSetupDialog();
     }
@@ -6443,7 +6467,6 @@ async function uceRuntimePrinterCheck() {
     },
     true
   );
-  await uceRuntimePrinterCheck();
   await refreshContextState();
   try {
     await listen("uce-incoming-file", (event) => {
@@ -6497,10 +6520,6 @@ async function uceRuntimePrinterCheck() {
   }
   contextPollTimer = setInterval(refreshContextState, CONTEXT_POLL_MS);
   autoPdfTimer = setInterval(() => void checkAutoPdfUpload("poll"), AUTO_PDF_POLL_MS);
-  setTimeout(
-    () => void selfHealPrinter(true),
-    PRINTER_STARTUP_REPAIR_DELAY_MS
-  );
   setInterval(() => void selfHealPrinter(), SELF_HEAL_PRINTER_MS);
   setInterval(
     () => void checkAutoPdfUpload("backup"),
