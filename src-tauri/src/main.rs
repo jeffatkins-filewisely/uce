@@ -1106,12 +1106,17 @@ fn uce_check_filewisely_printer() -> Result<PrinterCheckResult, String> {
 /// Bundled `pdf-printer` from the MSI (`resources` in `tauri.conf.json`) is used when `C:\FileWisely\pdf-printer` is empty.
 #[tauri::command]
 fn repair_printer(app: tauri::AppHandle) -> Result<RepairPrinterResult, String> {
-    let bundled = app
-        .path()
-        .resource_dir()
-        .ok()
-        .map(|d| d.join("pdf-printer"));
-    services::printer_check::repair_filewisely_printer(bundled)
+    let mut roots: Vec<PathBuf> = vec![PathBuf::from(r"C:\FileWisely\pdf-printer")];
+    if let Ok(rd) = app.path().resource_dir() {
+        roots.push(rd.join("pdf-printer"));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            roots.push(dir.join("resources").join("pdf-printer"));
+            roots.push(dir.join("pdf-printer"));
+        }
+    }
+    services::printer_check::repair_filewisely_printer(roots)
 }
 
 /// User or toast one-click: print an Office file to **FileWisely Printer** (Word COM, headless).

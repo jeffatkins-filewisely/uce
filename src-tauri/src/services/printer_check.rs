@@ -1,6 +1,7 @@
 //! Runtime check for the virtual PDF printer (Windows). Used on UCE startup for self-monitoring.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -116,10 +117,45 @@ fn printer_repair_debug(msg: impl AsRef<str>) {
     eprintln!("[UCE printer repair] {}", msg.as_ref());
 }
 
-/// Re-run silent PDF printer installer from `C:\FileWisely\pdf-printer` **or** bundled `pdf-printer` in app resources (MSI),
+/// Run Bullzip/Inno setup **elevated**. Printer drivers require admin; spawning `setup.exe` from a normal
+/// user session fails silently without UAC. Uses `Start-Process -Verb RunAs` (one UAC prompt).
+#[cfg(windows)]
+fn run_pdf_setup_elevated(setup_exe: &Path) -> Result<std::process::ExitStatus, String> {
+    let path_lit = setup_exe.to_string_lossy().replace('\'', "''");
+    let script = format!(
+        r#"$ErrorActionPreference = 'Stop'
+try {{
+  $p = Start-Process -FilePath '{path_lit}' -ArgumentList '/VERYSILENT','/NORESTART' -Verb RunAs -Wait -PassThru
+  if ($null -eq $p) {{ exit 1 }}
+  exit [int]($p.ExitCode)
+}} catch {{
+  exit 1
+}}"#
+    );
+    std::process::Command::new("powershell.exe")
+        // Do not use -NonInteractive: UAC / elevation may require a logged-in desktop session.
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &script,
+        ])
+        .status()
+        .map_err(|e| format!("elevated PDF installer: {e}"))
+}
+
+#[cfg(windows)]
+fn dedupe_search_roots(mut roots: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut seen = HashSet::new();
+    roots.retain(|p| seen.insert(p.to_string_lossy().to_lowercase()));
+    roots
+}
+
+/// Re-run silent PDF printer installer from known locations (shop folder, MSI resources, next to exe),
 /// then rename to **FileWisely Printer** if needed.
 #[cfg(windows)]
-pub fn repair_filewisely_printer(bundled_pdf_printer_dir: Option<PathBuf>) -> Result<RepairPrinterResult, String> {
+pub fn repair_filewisely_printer(search_roots: Vec<PathBuf>) -> Result<RepairPrinterResult, String> {
     if check_filewisely_printer()
         .map(|r| r.filewisely_exact)
         .unwrap_or(false)
@@ -130,27 +166,17 @@ pub fn repair_filewisely_printer(bundled_pdf_printer_dir: Option<PathBuf>) -> Re
         });
     }
 
-    let shop = PathBuf::from(r"C:\FileWisely\pdf-printer");
-    printer_repair_debug(format!(
-        "looking under shop dir: {:?} exists={}",
-        shop,
-        shop.is_dir()
-    ));
-    if let Some(ref b) = bundled_pdf_printer_dir {
-        printer_repair_debug(format!(
-            "looking under bundled dir: {:?} exists={}",
-            b,
-            b.is_dir()
-        ));
-    } else {
-        printer_repair_debug("bundled pdf-printer dir: (none — resource_dir unavailable?)");
+    let roots = dedupe_search_roots(search_roots);
+    for r in &roots {
+        printer_repair_debug(format!("search root {:?} exists={}", r, r.is_dir()));
     }
 
-    let mut setup: Option<PathBuf> = find_pdf_setup_exe_in(&shop);
-    if setup.is_none() {
-        if let Some(ref dir) = bundled_pdf_printer_dir {
-            if dir.is_dir() {
-                setup = find_pdf_setup_exe_in(dir);
+    let mut setup: Option<PathBuf> = None;
+    for root in &roots {
+        if root.is_dir() {
+            if let Some(p) = find_pdf_setup_exe_in(root) {
+                setup = Some(p);
+                break;
             }
         }
     }
@@ -163,24 +189,24 @@ pub fn repair_filewisely_printer(bundled_pdf_printer_dir: Option<PathBuf>) -> Re
         });
     };
 
-    printer_repair_debug(format!("running installer: {:?}", setup_exe));
-    // Bullzip ships as Inno Setup: /SILENT is weaker; use Inno-style silent + no restart.
-    let status = std::process::Command::new(&setup_exe)
-        .args(["/VERYSILENT", "/NORESTART"])
-        .status()
-        .map_err(|e| format!("run PDF installer: {e}"))?;
+    eprintln!(
+        "[UCE] printer repair: running elevated installer: {}",
+        setup_exe.display()
+    );
+    printer_repair_debug(format!("running installer (elevated): {:?}", setup_exe));
+    let status = run_pdf_setup_elevated(&setup_exe)?;
     if !status.success() {
         printer_repair_debug(format!("installer exit code: {:?}", status.code()));
         return Ok(RepairPrinterResult {
             ok: false,
             message: format!(
-                "PDF installer exited with code {:?}",
+                "PDF installer exited with code {:?} (declined UAC or silent failure — try running UCE as Administrator once, or install Bullzip manually)",
                 status.code()
             ),
         });
     }
 
-    std::thread::sleep(Duration::from_secs(5));
+    std::thread::sleep(Duration::from_secs(8));
     let _ = rename_pdf_queue_to_filewisely();
 
     let ok = check_filewisely_printer()
@@ -202,7 +228,7 @@ pub fn repair_filewisely_printer(bundled_pdf_printer_dir: Option<PathBuf>) -> Re
 }
 
 #[cfg(not(windows))]
-pub fn repair_filewisely_printer(_bundled_pdf_printer_dir: Option<PathBuf>) -> Result<RepairPrinterResult, String> {
+pub fn repair_filewisely_printer(_search_roots: Vec<PathBuf>) -> Result<RepairPrinterResult, String> {
     Ok(RepairPrinterResult {
         ok: true,
         message: "skip".into(),
