@@ -1103,9 +1103,15 @@ fn uce_check_filewisely_printer() -> Result<PrinterCheckResult, String> {
 }
 
 /// Self-healing: re-run PDF printer silent install + rename (cooldown enforced in JS).
+/// Bundled `pdf-printer` from the MSI (`resources` in `tauri.conf.json`) is used when `C:\FileWisely\pdf-printer` is empty.
 #[tauri::command]
-fn repair_printer() -> Result<RepairPrinterResult, String> {
-    services::printer_check::repair_filewisely_printer()
+fn repair_printer(app: tauri::AppHandle) -> Result<RepairPrinterResult, String> {
+    let bundled = app
+        .path()
+        .resource_dir()
+        .ok()
+        .map(|d| d.join("pdf-printer"));
+    services::printer_check::repair_filewisely_printer(bundled)
 }
 
 /// User or toast one-click: print an Office file to **FileWisely Printer** (Word COM, headless).

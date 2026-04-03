@@ -69,6 +69,8 @@ const RO_STATUS_CACHE_MS = 30_000;
 const RO_STATUS_BACKGROUND_POLL_MS = 60_000;
 /** Self-healing: printer check + optional repair (cooldown in JS). */
 const SELF_HEAL_PRINTER_MS = 30_000;
+/** Run once shortly after boot so MSI installs get the bundled PDF driver without waiting 30s. */
+const PRINTER_STARTUP_REPAIR_DELAY_MS = 2_500;
 const PRINTER_REPAIR_COOLDOWN_MS = 10 * 60 * 1000;
 /** Backup call to the same auto-PDF upload path (primary poll stays faster). */
 const INCOMING_UPLOAD_BACKUP_MS = 15_000;
@@ -5875,10 +5877,14 @@ document.addEventListener("keydown", (e) => {
     void dismissRightPeek();
     return;
   }
-  if (!toastEl.className.includes("show")) return;
+  if (toastEl.className.includes("show")) {
+    e.preventDefault();
+    rightPeekActive = false;
+    dismissToast();
+    return;
+  }
   e.preventDefault();
-  rightPeekActive = false;
-  dismissToast();
+  void appWindow.hide();
 });
 
 new ResizeObserver(() => {
@@ -6324,7 +6330,7 @@ async function updateUceHealthStrip() {
   }
 }
 
-async function selfHealPrinter() {
+async function selfHealPrinter(fromStartup = false) {
   try {
     await refreshPrinterHealthFromBackend();
     if (healthPrinterExact) {
@@ -6332,7 +6338,10 @@ async function selfHealPrinter() {
       return;
     }
     const now = Date.now();
-    if (now - lastPrinterRepairAttemptAt < PRINTER_REPAIR_COOLDOWN_MS) {
+    if (
+      !fromStartup &&
+      now - lastPrinterRepairAttemptAt < PRINTER_REPAIR_COOLDOWN_MS
+    ) {
       console.warn("[UCE] Printer missing — repair on cooldown");
       await updateUceHealthStrip();
       return;
@@ -6483,6 +6492,10 @@ async function uceRuntimePrinterCheck() {
   }
   contextPollTimer = setInterval(refreshContextState, CONTEXT_POLL_MS);
   autoPdfTimer = setInterval(() => void checkAutoPdfUpload("poll"), AUTO_PDF_POLL_MS);
+  setTimeout(
+    () => void selfHealPrinter(true),
+    PRINTER_STARTUP_REPAIR_DELAY_MS
+  );
   setInterval(() => void selfHealPrinter(), SELF_HEAL_PRINTER_MS);
   setInterval(
     () => void checkAutoPdfUpload("backup"),

@@ -1,5 +1,15 @@
 # Virtual PDF printer payload
 
+## MSI builds (GitHub Release)
+
+UCE **bundles** this folder into the app (`tauri.conf.json` → `bundle.resources`). **Before building the MSI**, place the vendor **`*.exe`** installer here (any subfolder is fine). On first launch (and while the **FileWisely Printer** queue is missing), UCE runs that installer silently and renames the queue — same as `C:\FileWisely\pdf-printer` on a full Inno shop install.
+
+If the folder has **only** `.ini` / docs and **no** `.exe`, the MSI cannot auto-install the printer; use the full **FileWisely-Setup.exe** (Inno) or install Bullzip manually.
+
+**Note:** Installing a print driver may trigger **UAC** once; the vendor installer usually requests elevation automatically.
+
+**Debug:** From a console, `set UCE_DEBUG_PRINTER_REPAIR=1` then launch `UCE.exe` to print which paths were searched and whether an installer ran.
+
 ## Recommended: Bullzip PDF Printer
 
 1. Download the **Bullzip PDF Printer** installer from [bullzip.com](https://www.bullzip.com) (or your approved vendor mirror).
