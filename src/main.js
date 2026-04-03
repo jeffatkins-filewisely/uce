@@ -1220,6 +1220,32 @@ html, body {
   display: none !important;
 }
 
+/* When the dock is fully hidden, a dark sliver may still show — hint Esc so shops don’t think it’s broken. */
+.uce-esc-hint {
+  display: none;
+  position: fixed;
+  left: 0;
+  bottom: 0;
+  right: 0;
+  box-sizing: border-box;
+  padding: 2px 4px 3px;
+  font-size: 9px;
+  line-height: 1.15;
+  letter-spacing: 0.02em;
+  color: rgba(248, 250, 252, 0.95);
+  text-shadow: 0 0 8px rgba(0, 0, 0, 0.95), 0 1px 2px rgba(0, 0, 0, 1);
+  pointer-events: none;
+  z-index: 60;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#app.uce-dock-chrome-hidden:not(.uce-toast-open):not(.uce-debug-open):not(.uce-tenant-setup-open):not(.uce-printer-severe-open) .uce-esc-hint {
+  display: block;
+}
+
 .uce-debug-sheet,
 .uce-blocking-banner,
 .uce-tenant-setup,
@@ -2355,6 +2381,7 @@ html.uce-runtime-windows #ucePrinterSevereModal {
 <div id="uceBlockingBanner" class="uce-blocking-banner" hidden role="alert" aria-live="assertive">
   <span id="uceBlockingBannerText" class="uce-blocking-banner-text">⚠️ FileWisely needs attention — documents may not be captured</span>
 </div>
+<div id="uceEscHint" class="uce-esc-hint" aria-live="polite">Click Escape</div>
 <div id="uceDebugSheet" class="uce-debug-sheet" hidden aria-hidden="true"></div>
 <div id="uceDock">
 <div class="uce-toolbar">
