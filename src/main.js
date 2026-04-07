@@ -64,6 +64,10 @@ const UPLOAD_TIMEOUT_MS = 10000;
 const UCE_HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
 const UCE_HEARTBEAT_FETCH_MS = 15000;
 let uceHeartbeatIntervalId = null;
+/** Supabase heartbeat may nudge GitHub updater; avoid overlapping / spamming checks. */
+const UCE_HEARTBEAT_NUDGE_UPDATE_COOLDOWN_MS = 2 * 60 * 1000;
+let uceHeartbeatUpdateNudgeInFlight = false;
+let uceLastHeartbeatNudgeUpdateAt = 0;
 /** Active window poll for context + RO monitor (CCC title + leading digits). */
 const CONTEXT_POLL_MS = 500;
 const AUTO_PDF_POLL_MS = 3000;
@@ -581,6 +585,19 @@ async function sendUceHeartbeat() {
       if (!response.ok) {
         const t = await response.text();
         console.warn("[UCE] heartbeat HTTP", response.status, t);
+      } else {
+        let data = null;
+        try {
+          const ct = (response.headers.get("content-type") || "").toLowerCase();
+          if (ct.includes("application/json")) {
+            data = await response.json();
+          }
+        } catch (_) {
+          /* ignore non-JSON success bodies */
+        }
+        if (data && data.update_available === true) {
+          void maybeRunUpdateFromHeartbeatNudge();
+        }
       }
     } finally {
       clearTimeout(timeoutId);
@@ -6153,6 +6170,26 @@ async function runUceAppUpdateCheck(options = {}) {
       currentVersion,
     };
   }
+}
+
+/**
+ * Heartbeat (`uce-ingest`) can return `{ update_available: true }`; run the existing GitHub/Tauri updater.
+ * Debounced so rapid heartbeats or slow checks don't stack.
+ */
+function maybeRunUpdateFromHeartbeatNudge() {
+  if (uceHeartbeatUpdateNudgeInFlight) return;
+  const now = Date.now();
+  if (
+    uceLastHeartbeatNudgeUpdateAt > 0 &&
+    now - uceLastHeartbeatNudgeUpdateAt < UCE_HEARTBEAT_NUDGE_UPDATE_COOLDOWN_MS
+  ) {
+    return;
+  }
+  uceHeartbeatUpdateNudgeInFlight = true;
+  uceLastHeartbeatNudgeUpdateAt = now;
+  void runUceAppUpdateCheck({ force: true }).finally(() => {
+    uceHeartbeatUpdateNudgeInFlight = false;
+  });
 }
 
 /**
