@@ -11,3 +11,4 @@ pub mod file_normalizer;
 pub mod printer_check;
 pub mod print_watcher;
 pub mod processed_retention;
+pub mod startup_shortcut;

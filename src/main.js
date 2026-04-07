@@ -60,6 +60,10 @@ let resolvedBusinessId = "";
 const WATCH_POLICY_URL = (import.meta.env.VITE_UCE_WATCH_POLICY_URL || "").trim();
 const WATCH_POLICY_POLL_MS = Number(import.meta.env.VITE_UCE_WATCH_POLICY_POLL_MS) || 30 * 60 * 1000;
 const UPLOAD_TIMEOUT_MS = 10000;
+/** `uce-ingest` heartbeat — keeps portal device Active + `agent_version` (see plan). */
+const UCE_HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
+const UCE_HEARTBEAT_FETCH_MS = 15000;
+let uceHeartbeatIntervalId = null;
 /** Active window poll for context + RO monitor (CCC title + leading digits). */
 const CONTEXT_POLL_MS = 500;
 const AUTO_PDF_POLL_MS = 3000;
@@ -536,6 +540,96 @@ async function initTenantContext() {
   const fromDisk =
     typeof fromFile === "string" && fromFile.trim() ? fromFile.trim() : "";
   resolvedBusinessId = fromDisk || fromEnv;
+  void ensureUceDesktopPresence();
+}
+
+/**
+ * POST `action: heartbeat` to `VITE_UCE_UPLOAD_URL` (same as captures). Best-effort.
+ * `getDeviceId` is defined later in this file; safe at call time.
+ */
+async function sendUceHeartbeat() {
+  const bid = getBusinessId();
+  if (!bid || !BACKEND_UPLOAD_URL || !SUPABASE_ANON_KEY) return;
+  try {
+    const [version, deviceName, osInfo] = await Promise.all([
+      getVersion(),
+      invoke("uce_machine_name"),
+      invoke("uce_os_info"),
+    ]);
+    const body = {
+      action: "heartbeat",
+      business_id: bid,
+      device_id: getDeviceId(),
+      device_name: typeof deviceName === "string" ? deviceName : "",
+      agent_version: version || "0.0.0",
+      os_info: typeof osInfo === "string" ? osInfo : "",
+      user_id: "",
+    };
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), UCE_HEARTBEAT_FETCH_MS);
+    try {
+      const response = await fetch(BACKEND_UPLOAD_URL, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+          apikey: SUPABASE_ANON_KEY,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        const t = await response.text();
+        console.warn("[UCE] heartbeat HTTP", response.status, t);
+      }
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  } catch (e) {
+    if (e?.name === "AbortError") {
+      console.warn("[UCE] heartbeat timed out");
+    } else {
+      console.warn("[UCE] heartbeat:", e);
+    }
+  }
+}
+
+/** Per-user Startup shortcut (MSI-safe) + heartbeat interval when tenant + ingest URL are set. */
+async function ensureUceDesktopPresence() {
+  try {
+    if (getBusinessId() && BACKEND_UPLOAD_URL && SUPABASE_ANON_KEY) {
+      await invoke("uce_ensure_startup_shortcut").catch((e) =>
+        console.warn("[UCE] uce_ensure_startup_shortcut:", e)
+      );
+    }
+  } catch (e) {
+    console.warn("[UCE] startup shortcut:", e);
+  }
+
+  if (uceHeartbeatIntervalId !== null) {
+    clearInterval(uceHeartbeatIntervalId);
+    uceHeartbeatIntervalId = null;
+  }
+
+  const bid = getBusinessId();
+  if (!bid || !BACKEND_UPLOAD_URL || !SUPABASE_ANON_KEY) {
+    return;
+  }
+
+  void sendUceHeartbeat();
+  uceHeartbeatIntervalId = setInterval(
+    () => void sendUceHeartbeat(),
+    UCE_HEARTBEAT_INTERVAL_MS
+  );
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("beforeunload", () => {
+    if (uceHeartbeatIntervalId !== null) {
+      clearInterval(uceHeartbeatIntervalId);
+      uceHeartbeatIntervalId = null;
+    }
+  });
 }
 
 function getBusinessId() {
@@ -6560,6 +6654,13 @@ async function uceRuntimePrinterCheck() {
     });
   } catch (e) {
     console.warn("[UCE] uce-show-dock listener:", e);
+  }
+  try {
+    await listen("uce-system-resumed", () => {
+      void sendUceHeartbeat();
+    });
+  } catch (e) {
+    console.warn("[UCE] uce-system-resumed listener:", e);
   }
   contextPollTimer = setInterval(refreshContextState, CONTEXT_POLL_MS);
   autoPdfTimer = setInterval(() => void checkAutoPdfUpload("poll"), AUTO_PDF_POLL_MS);

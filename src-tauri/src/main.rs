@@ -1206,6 +1206,21 @@ async fn uce_post_ro_status(
     Ok(text)
 }
 
+#[tauri::command]
+fn uce_machine_name() -> String {
+    sysinfo::System::host_name().unwrap_or_else(|| "unknown".to_string())
+}
+
+#[tauri::command]
+fn uce_os_info() -> String {
+    sysinfo::System::long_os_version().unwrap_or_else(|| "unknown".to_string())
+}
+
+#[tauri::command]
+fn uce_ensure_startup_shortcut() -> Result<String, String> {
+    services::startup_shortcut::ensure_filewisely_uce_shortcut()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let global_shortcut_plugin = tauri_plugin_global_shortcut::Builder::new()
@@ -1309,10 +1324,20 @@ pub fn run() {
             repair_printer,
             uce_office_print_to_filewisely,
             uce_post_ro_status,
-            uce_ccc_cr_manual_close_word
+            uce_ccc_cr_manual_close_word,
+            uce_machine_name,
+            uce_os_info,
+            uce_ensure_startup_shortcut
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::Resumed = event {
+                if let Err(e) = app_handle.emit("uce-system-resumed", ()) {
+                    eprintln!("[UCE] emit uce-system-resumed: {e}");
+                }
+            }
+        });
 }
 
 fn main() {
