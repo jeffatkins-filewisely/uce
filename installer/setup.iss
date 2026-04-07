@@ -44,8 +44,9 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop icon for UCE"; GroupDescription: "Shortcuts:"; Flags: unchecked
-; When checked, install.ps1 does not run Bullzip / FileWisely Printer steps (UCE + folders only). Use if you removed the printer and do not want it recreated.
-Name: "skipprinter"; Description: "Skip PDF &printer install (no Bullzip / FileWisely Printer)"; GroupDescription: "Options:"; Flags: unchecked
+; Default ON: do not install Bullzip / add a virtual queue unless the shop opts in (avoids touching spooler & customer defaults).
+; Uncheck "Skip…" only when you want FileWisely Printer on that PC. Silent opt-in to printer: /TASKS="!skipprinter"
+Name: "skipprinter"; Description: "Skip virtual PDF printer install (recommended — leaves shop printers unchanged)"; GroupDescription: "Options:"; Flags: checked
 
 [Files]
 ; Payload must live next to this .iss under installer\
@@ -61,7 +62,7 @@ Source: "pdf-printer\*"; DestDir: "{app}\pdf-printer"; Flags: recursesubdirs cre
 ; Runs after files are installed to {app} (= C:\FileWisely). install.ps1 copies uce → C:\FileWisely\App and configures printer unless Task skipprinter.
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\install.ps1"" -BusinessId ""{#MyBusinessId}""{code:GetInstallPs1ExtraArgs}"; \
-  StatusMsg: "Installing printer and UCE..."; \
+  StatusMsg: "Installing FileWisely (UCE)..."; \
   Flags: runhidden waituntilterminated
 
 [Code]
