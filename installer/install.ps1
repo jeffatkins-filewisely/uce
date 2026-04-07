@@ -226,28 +226,10 @@ try {
         if (-not (Get-Printer -Name $PrinterDisplayName -ErrorAction SilentlyContinue)) {
             [void](Ensure-FileWiselyPrinter -InstallerRoot $Root -DisplayName $PrinterDisplayName)
         }
-        $pdfPrinters = @(Get-Printer -ErrorAction SilentlyContinue | Where-Object {
-                $_.Name -match '(?i)bullzip|filewisely|pdf printer'
-            })
 
-        # Prefer default printer = FileWisely pipeline (rename in Windows if installer left vendor name).
-        $defaultTarget = $null
-        if (Get-Printer -Name $PrinterDisplayName -ErrorAction SilentlyContinue) {
-            $defaultTarget = $PrinterDisplayName
-        }
-        elseif ($pdfPrinters -and $pdfPrinters.Count -gt 0) {
-            $defaultTarget = $pdfPrinters[0].Name
-            Write-Warning "Printer named '$PrinterDisplayName' not found — setting default to '$defaultTarget'. Rename printer to '$PrinterDisplayName' for consistency with UCE docs."
-        }
-        if ($defaultTarget) {
-            try {
-                Set-Printer -Name $defaultTarget -IsDefault $true -ErrorAction Stop
-                Write-Host "Default printer set to: $defaultTarget"
-            }
-            catch {
-                Write-Warning "Could not set default printer (${defaultTarget}): $_"
-            }
-        }
+        # Do NOT change Windows default printer — shops need CCC and other apps to keep using their
+        # physical default (laser, receipt, etc.). FileWisely Printer stays available as a named queue;
+        # staff choose it when they want capture, or UCE watches folders for PDFs saved elsewhere.
 
         Write-Host ""
         Write-Host "Bullzip: configuring silent PDF output to $Incoming (no Save As dialog)..."
