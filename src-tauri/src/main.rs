@@ -1224,8 +1224,8 @@ fn uce_ensure_startup_shortcut() -> Result<String, String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let global_shortcut_plugin = tauri_plugin_global_shortcut::Builder::new()
-        .with_shortcuts(["ctrl+shift+w", "ctrl+shift+u"])
-        .expect("UCE: register ctrl+shift+w (CCC Word) and ctrl+shift+u (show dock)")
+        .with_shortcuts(["ctrl+shift+w", "ctrl+shift+u", "ctrl+shift+q"])
+        .expect("UCE: register ctrl+shift+w/u/q (Word close / show dock / exit)")
         .with_handler(|app, shortcut, event| {
             use tauri_plugin_global_shortcut::ShortcutState;
             if event.state != ShortcutState::Pressed {
@@ -1233,6 +1233,11 @@ pub fn run() {
             }
             let key = format!("{shortcut}");
             let lower = key.to_lowercase();
+            if lower.contains("shift+q") {
+                eprintln!("[UCE] ctrl+shift+q — exiting desktop agent");
+                app.exit(0);
+                return;
+            }
             if lower.contains("shift+u") {
                 if let Err(e) = app.emit("uce-show-dock", ()) {
                     eprintln!("[UCE] emit uce-show-dock: {e}");
@@ -1252,8 +1257,23 @@ pub fn run() {
 
     #[cfg(windows)]
     {
-        builder = builder.plugin(tauri_plugin_single_instance::init(|_app, argv, _cwd| {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             eprintln!("[UCE] single-instance argv: {:?}", argv);
+            // When UCE is already running, Windows may start a second process with `uce://…` on argv.
+            // Forward those URLs to the webview so `tryApplyBusinessIdFromUrls` runs (browser Connect flow).
+            let deeplinks: Vec<String> = argv
+                .into_iter()
+                .filter(|a| {
+                    let s = a.to_lowercase();
+                    s.contains("uce:") || s.contains("uce%3a") || s.contains("uce%3a%2f%2f")
+                })
+                .collect();
+            if !deeplinks.is_empty() {
+                eprintln!("[UCE] single-instance forwarding deeplinks to webview: {:?}", deeplinks);
+                if let Err(e) = app.emit("uce-argv-deeplinks", deeplinks) {
+                    eprintln!("[UCE] emit uce-argv-deeplinks: {e}");
+                }
+            }
         }));
     }
 
@@ -1277,6 +1297,20 @@ pub fn run() {
                 let h = app.handle().clone();
                 apply_startup_window_position(&h, &window);
                 schedule_startup_position_retry(&h);
+
+                // Alt+F4 / close: keep agent running (heartbeats, watchers). Use Ctrl+Shift+Q to exit.
+                let app_handle = app.handle().clone();
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        if let Err(e) = app_handle.emit("uce-close-keep-running", ()) {
+                            eprintln!("[UCE] emit uce-close-keep-running: {e}");
+                        }
+                        if let Some(w) = app_handle.get_webview_window("main") {
+                            let _ = w.hide();
+                        }
+                    }
+                });
             }
             #[cfg(windows)]
             {

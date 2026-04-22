@@ -2492,7 +2492,7 @@ html.uce-runtime-windows #ucePrinterSevereModal {
 <div id="uceBlockingBanner" class="uce-blocking-banner" hidden role="alert" aria-live="assertive">
   <span id="uceBlockingBannerText" class="uce-blocking-banner-text">⚠️ FileWisely needs attention — documents may not be captured</span>
 </div>
-<div id="uceEscHint" class="uce-esc-hint" aria-live="polite">Click Escape</div>
+<div id="uceEscHint" class="uce-esc-hint" aria-live="polite">Esc — Close hides UCE (still running) · Ctrl+Shift+U show · Ctrl+Shift+Q quit</div>
 <div id="uceDebugSheet" class="uce-debug-sheet" hidden aria-hidden="true"></div>
 <div id="uceDock">
 <div class="uce-toolbar">
@@ -2699,7 +2699,8 @@ function parseBusinessIdFromUceUrl(urlStr) {
       .replace(/^\/+|\/+$/g, "")
       .toLowerCase();
     if (path && path !== "connect") return null;
-    const id = u.searchParams.get("business_id");
+    const id =
+      u.searchParams.get("business_id") || u.searchParams.get("token");
     return id ? id.trim() : null;
   } catch {
     return null;
@@ -6693,8 +6694,40 @@ async function uceRuntimePrinterCheck() {
     console.warn("[UCE] uce-show-dock listener:", e);
   }
   try {
+    await listen("uce-argv-deeplinks", (e) => {
+      const urls = e?.payload;
+      if (Array.isArray(urls) && urls.length) {
+        console.info("[UCE] uce-argv-deeplinks:", urls);
+        void (async () => {
+          await tryApplyBusinessIdFromUrls(urls);
+          if (getBusinessId()) {
+            try {
+              await invoke("focus_overlay");
+            } catch (_) {
+              /* ignore */
+            }
+          }
+        })();
+      }
+    });
+  } catch (e) {
+    console.warn("[UCE] uce-argv-deeplinks listener:", e);
+  }
+  try {
+    await listen("uce-close-keep-running", () => {
+      showToast(
+        "UCE stays running in the background (heartbeats + capture). Press Ctrl+Shift+Q to exit.",
+        "info",
+        8000
+      );
+    });
+  } catch (e) {
+    console.warn("[UCE] uce-close-keep-running listener:", e);
+  }
+  try {
     await listen("uce-system-resumed", () => {
       void sendUceHeartbeat();
+      void ensureUceDesktopPresence();
     });
   } catch (e) {
     console.warn("[UCE] uce-system-resumed listener:", e);

@@ -134,8 +134,19 @@ const DEBUG_POLL_ITERATIONS: u32 = 25;
 /// background thread. Use to see when WINWORD or Explorer becomes active relative to print/save.
 pub fn spawn_foreground_debug_poll_after_detection() {
     thread::spawn(|| {
+        let mut last_logged: Option<String> = None;
         for _ in 0..DEBUG_POLL_ITERATIONS {
-            log_foreground("debug_poll");
+            let line = match foreground_snapshot() {
+                Some(s) => {
+                    record_winword_if_class(&s);
+                    format_foreground_line("debug_poll", &s)
+                }
+                None => "[UCE] foreground debug_poll: (unavailable)".to_string(),
+            };
+            if last_logged.as_ref() != Some(&line) {
+                eprintln!("{line}");
+                last_logged = Some(line);
+            }
             thread::sleep(Duration::from_millis(DEBUG_POLL_INTERVAL_MS));
         }
     });

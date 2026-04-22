@@ -43,6 +43,32 @@ pub fn ensure_filewisely_uce_shortcut() -> Result<String, String> {
         ));
     }
 
+    // Backup autostart (MSI has no Inno `install.ps1`). If both Run + .lnk fire at logon, single-instance keeps one process.
+    let reg_value = format!("\"{}\"", target.replace('"', ""));
+    let reg = Command::new("reg.exe")
+        .args([
+            "add",
+            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+            "/v",
+            "FileWiselyUCE",
+            "/t",
+            "REG_SZ",
+            "/d",
+            &reg_value,
+            "/f",
+        ])
+        .status();
+    match reg {
+        Ok(s) if s.success() => {}
+        Ok(s) => eprintln!(
+            "[UCE] HKCU Run FileWiselyUCE: reg.exe failed (exit {:?}); Startup .lnk still created.",
+            s.code()
+        ),
+        Err(e) => eprintln!(
+            "[UCE] HKCU Run FileWiselyUCE: could not run reg.exe ({e}); Startup .lnk still created."
+        ),
+    }
+
     Ok(lnk_str)
 }
 
