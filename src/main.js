@@ -6659,6 +6659,28 @@ async function uceRuntimePrinterCheck() {
   try {
     await initTenantContext();
     await initUceDeepLinkListeners();
+    /* Register before tenant dialog / long init: single-instance forwards `uce://` via emit; a late
+     * listener used to miss the event if Connect fired while the setup overlay was open. */
+    try {
+      await listen("uce-argv-deeplinks", (e) => {
+        const urls = e?.payload;
+        if (Array.isArray(urls) && urls.length) {
+          console.info("[UCE] uce-argv-deeplinks:", urls);
+          void (async () => {
+            await tryApplyBusinessIdFromUrls(urls);
+            if (getBusinessId()) {
+              try {
+                await invoke("focus_overlay");
+              } catch (_) {
+                /* ignore */
+              }
+            }
+          })();
+        }
+      });
+    } catch (e) {
+      console.warn("[UCE] uce-argv-deeplinks listener:", e);
+    }
     void uceRuntimePrinterCheck();
     if (!getBusinessId()) {
       await showTenantSetupDialog();
@@ -6731,26 +6753,6 @@ async function uceRuntimePrinterCheck() {
     });
   } catch (e) {
     console.warn("[UCE] uce-show-dock listener:", e);
-  }
-  try {
-    await listen("uce-argv-deeplinks", (e) => {
-      const urls = e?.payload;
-      if (Array.isArray(urls) && urls.length) {
-        console.info("[UCE] uce-argv-deeplinks:", urls);
-        void (async () => {
-          await tryApplyBusinessIdFromUrls(urls);
-          if (getBusinessId()) {
-            try {
-              await invoke("focus_overlay");
-            } catch (_) {
-              /* ignore */
-            }
-          }
-        })();
-      }
-    });
-  } catch (e) {
-    console.warn("[UCE] uce-argv-deeplinks listener:", e);
   }
   try {
     await listen("uce-close-keep-running", () => {
