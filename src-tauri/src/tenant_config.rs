@@ -26,14 +26,40 @@ fn tenant_file(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join("uce-tenant.json"))
 }
 
+/// Strip UTF-8 BOM (Notepad “UTF-8” often writes one) so `serde_json` can parse.
+fn strip_utf8_bom(bytes: &[u8]) -> &[u8] {
+    if bytes.len() >= 3 && bytes[0..3] == [0xef, 0xbb, 0xbf] {
+        &bytes[3..]
+    } else {
+        bytes
+    }
+}
+
 fn read_config(app: &tauri::AppHandle) -> Result<TenantConfig, String> {
     let path = tenant_file(app)?;
     if !path.exists() {
         return Ok(TenantConfig::default());
     }
-    let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    let cfg: TenantConfig = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
-    Ok(cfg)
+    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+    let slice = strip_utf8_bom(&bytes);
+    let raw = match std::str::from_utf8(slice) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!(
+                "[UCE] uce-tenant.json: invalid UTF-8: {e} — using empty tenant until the file is fixed"
+            );
+            return Ok(TenantConfig::default());
+        }
+    };
+    match serde_json::from_str::<TenantConfig>(raw) {
+        Ok(cfg) => Ok(cfg),
+        Err(e) => {
+            eprintln!(
+                "[UCE] uce-tenant.json: JSON parse error: {e} — fix the file (valid JSON, no // comments) or delete it; using empty tenant for now"
+            );
+            Ok(TenantConfig::default())
+        }
+    }
 }
 
 fn write_config(app: &tauri::AppHandle, cfg: &TenantConfig) -> Result<(), String> {
