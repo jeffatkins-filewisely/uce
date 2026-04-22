@@ -1080,6 +1080,21 @@ fn save_tenant_business_id(app: tauri::AppHandle, business_id: String) -> Result
     tenant_config::save_tenant_business_id(&app, business_id)
 }
 
+#[tauri::command]
+fn load_tenant_config(app: tauri::AppHandle) -> Result<tenant_config::TenantConfig, String> {
+    tenant_config::load_tenant_config(&app)
+}
+
+#[tauri::command]
+fn save_tenant_from_connect(
+    app: tauri::AppHandle,
+    business_id: String,
+    backend_url: Option<String>,
+    anon_key: Option<String>,
+) -> Result<(), String> {
+    tenant_config::save_tenant_from_connect(&app, business_id, backend_url, anon_key)
+}
+
 /// Copy a saved file into `C:\FileWisely\Incoming` (e.g. staff used “Save as” outside the watch folder).
 #[tauri::command]
 fn uce_copy_into_incoming(path: String) -> Result<String, String> {
@@ -1349,7 +1364,9 @@ pub fn run() {
             sync_watch_policy_from_remote,
             apply_watch_policy_json,
             load_tenant_business_id,
+            load_tenant_config,
             save_tenant_business_id,
+            save_tenant_from_connect,
             uce_set_overlay_logical_size,
             uce_open_url,
             uce_copy_into_incoming,

@@ -47,15 +47,25 @@ import {
 /** Last `decisionReasons` from operator reason layer (debug / Theo bridge). */
 let lastUceDecisionReasons = [];
 
-const BACKEND_UPLOAD_URL = (import.meta.env.VITE_UCE_UPLOAD_URL || "").trim();
-/** FileWisely / Supabase anon key (Bearer + apikey). Supports VITE_SUPABASE_ANON_KEY or VITE_UCE_SUPABASE_ANON_KEY. */
-const SUPABASE_ANON_KEY = (
+const ENV_UCE_UPLOAD_URL = (import.meta.env.VITE_UCE_UPLOAD_URL || "").trim();
+const ENV_SUPABASE_ANON_KEY = (
   import.meta.env.VITE_UCE_SUPABASE_ANON_KEY ||
   import.meta.env.VITE_SUPABASE_ANON_KEY ||
   ""
 ).trim();
-/** Resolved at startup: `uce-tenant.json` (per install) overrides `VITE_UCE_BUSINESS_ID` (build-time). */
+/** From `uce-tenant.json` when not set at build (e.g. after `uce://connect?backend_url=…`). */
+let resolvedBackendUrl = "";
+let resolvedAnonKey = "";
+/** From `uce-tenant.json` (per install) or `VITE_UCE_BUSINESS_ID` (build-time). */
 let resolvedBusinessId = "";
+
+function getBackendUploadUrl() {
+  return (resolvedBackendUrl || ENV_UCE_UPLOAD_URL).trim();
+}
+
+function getSupabaseAnonKey() {
+  return (resolvedAnonKey || ENV_SUPABASE_ANON_KEY).trim();
+}
 /** HTTPS JSON endpoint (see watch_policy_sync.rs). When set, replaces local watch lists on a schedule. */
 const WATCH_POLICY_URL = (import.meta.env.VITE_UCE_WATCH_POLICY_URL || "").trim();
 const WATCH_POLICY_POLL_MS = Number(import.meta.env.VITE_UCE_WATCH_POLICY_POLL_MS) || 30 * 60 * 1000;
@@ -534,26 +544,42 @@ const appWindow = getCurrentWindow();
 const appEl = document.querySelector("#app");
 
 async function initTenantContext() {
-  let fromFile = null;
-  try {
-    fromFile = await invoke("load_tenant_business_id");
-  } catch (e) {
-    console.error("[UCE] load tenant business_id:", e);
-  }
   const fromEnv = (import.meta.env.VITE_UCE_BUSINESS_ID || "").trim();
-  const fromDisk =
-    typeof fromFile === "string" && fromFile.trim() ? fromFile.trim() : "";
+  let fromDisk = "";
+  resolvedBackendUrl = "";
+  resolvedAnonKey = "";
+  try {
+    const cfg = await invoke("load_tenant_config");
+    if (cfg && typeof cfg === "object") {
+      fromDisk = (cfg.business_id && String(cfg.business_id).trim()) || "";
+      resolvedBackendUrl = (cfg.backend_url && String(cfg.backend_url).trim()) || "";
+      resolvedAnonKey = (cfg.anon_key && String(cfg.anon_key).trim()) || "";
+    }
+  } catch (e) {
+    console.error("[UCE] load tenant config:", e);
+  }
   resolvedBusinessId = fromDisk || fromEnv;
+  {
+    const u = getBackendUploadUrl();
+    const k = getSupabaseAnonKey();
+    if (!u && !k) {
+      console.warn(
+        "[UCE] Ingest URL and Supabase anon key are both unset: use Connect in the web app, or set VITE_UCE_UPLOAD_URL and VITE_SUPABASE_ANON_KEY at build time. Heartbeat and uploads are disabled until then."
+      );
+    }
+  }
   void ensureUceDesktopPresence();
 }
 
 /**
- * POST `action: heartbeat` to `VITE_UCE_UPLOAD_URL` (same as captures). Best-effort.
- * `getDeviceId` is defined later in this file; safe at call time.
+ * POST `action: heartbeat` to the ingest URL (same as captures): tenant `uce-tenant.json`,
+ * or `VITE_UCE_UPLOAD_URL` when unset. Best-effort. `getDeviceId` is defined later; safe at call time.
  */
 async function sendUceHeartbeat() {
   const bid = getBusinessId();
-  if (!bid || !BACKEND_UPLOAD_URL || !SUPABASE_ANON_KEY) return;
+  const upload = getBackendUploadUrl();
+  const key = getSupabaseAnonKey();
+  if (!bid || !upload || !key) return;
   try {
     const [version, deviceName, osInfo] = await Promise.all([
       getVersion(),
@@ -572,11 +598,11 @@ async function sendUceHeartbeat() {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), UCE_HEARTBEAT_FETCH_MS);
     try {
-      const response = await fetch(BACKEND_UPLOAD_URL, {
+      const response = await fetch(upload, {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-          apikey: SUPABASE_ANON_KEY,
+          Authorization: `Bearer ${key}`,
+          apikey: key,
           "Content-Type": "application/json",
         },
         body: JSON.stringify(body),
@@ -614,7 +640,7 @@ async function sendUceHeartbeat() {
 /** Per-user Startup shortcut (MSI-safe) + heartbeat interval when tenant + ingest URL are set. */
 async function ensureUceDesktopPresence() {
   try {
-    if (getBusinessId() && BACKEND_UPLOAD_URL && SUPABASE_ANON_KEY) {
+    if (getBusinessId() && getBackendUploadUrl() && getSupabaseAnonKey()) {
       await invoke("uce_ensure_startup_shortcut").catch((e) =>
         console.warn("[UCE] uce_ensure_startup_shortcut:", e)
       );
@@ -629,7 +655,7 @@ async function ensureUceDesktopPresence() {
   }
 
   const bid = getBusinessId();
-  if (!bid || !BACKEND_UPLOAD_URL || !SUPABASE_ANON_KEY) {
+  if (!bid || !getBackendUploadUrl() || !getSupabaseAnonKey()) {
     return;
   }
 
@@ -660,7 +686,7 @@ function getBusinessId() {
 function getRoStatusUrl() {
   const explicit = (import.meta.env.VITE_UCE_RO_STATUS_URL || "").trim();
   if (explicit) return explicit;
-  const upload = (BACKEND_UPLOAD_URL || "").trim();
+  const upload = (getBackendUploadUrl() || "").trim();
   if (!upload) return "";
   try {
     const u = new URL(upload);
@@ -2688,8 +2714,11 @@ function hideTenantOverlayIfShown() {
   appEl.classList.remove("uce-tenant-setup-open");
 }
 
-/** Parse `business_id` from `uce://connect?...` or `uce://?...` (FileWisely "Open in app"). */
-function parseBusinessIdFromUceUrl(urlStr) {
+/**
+ * Parse `uce://connect?...` (FileWisely "Connect" / "Open in app") including
+ * `backend_url` and `anon_key` when the web app passes them.
+ */
+function parseUceConnectParams(urlStr) {
   try {
     const s = String(urlStr).trim();
     if (!/^uce:/i.test(s)) return null;
@@ -2700,8 +2729,12 @@ function parseBusinessIdFromUceUrl(urlStr) {
       .toLowerCase();
     if (path && path !== "connect") return null;
     const id =
-      u.searchParams.get("business_id") || u.searchParams.get("token");
-    return id ? id.trim() : null;
+      (u.searchParams.get("business_id") || u.searchParams.get("token") || "")
+        .trim() || null;
+    if (!id) return null;
+    const backendUrl = (u.searchParams.get("backend_url") || "").trim();
+    const anonKey = (u.searchParams.get("anon_key") || "").trim();
+    return { businessId: id, backendUrl, anonKey };
   } catch {
     return null;
   }
@@ -2710,10 +2743,16 @@ function parseBusinessIdFromUceUrl(urlStr) {
 async function tryApplyBusinessIdFromUrls(urls) {
   if (!Array.isArray(urls)) return;
   for (const raw of urls) {
-    const id = parseBusinessIdFromUceUrl(raw);
-    if (!id || !isValidUuid(id)) continue;
+    const parsed = parseUceConnectParams(raw);
+    if (!parsed) continue;
+    const { businessId: id, backendUrl, anonKey } = parsed;
+    if (!isValidUuid(id)) continue;
     try {
-      await invoke("save_tenant_business_id", { business_id: id });
+      await invoke("save_tenant_from_connect", {
+        business_id: id,
+        backend_url: backendUrl || null,
+        anon_key: anonKey || null,
+      });
       await initTenantContext();
       hideTenantOverlayIfShown();
       await setCompactWindowSize();
@@ -3610,7 +3649,7 @@ async function fetchRoStatus(roNumber, forceRefresh = false, windowTitleForApi) 
       repairOrderNumber: String(roNumber),
       windowTitle: resolvedTitle,
       deviceId: getDeviceId(),
-      authorization: SUPABASE_ANON_KEY || "",
+      authorization: getSupabaseAnonKey() || "",
     });
   } catch (e) {
     const msg =
@@ -5058,10 +5097,10 @@ async function uploadCapture(
   }
 
   const bid = getBusinessId();
-  if (BACKEND_UPLOAD_URL && !bid) {
+  if (getBackendUploadUrl() && !bid) {
     lastUploadDebug = {
       at: new Date().toISOString(),
-      endpoint: BACKEND_UPLOAD_URL,
+      endpoint: getBackendUploadUrl(),
       payload: null,
       response: {
         success: false,
@@ -5121,7 +5160,7 @@ async function uploadCapture(
     },
   };
 
-  if (!BACKEND_UPLOAD_URL) {
+  if (!getBackendUploadUrl()) {
     if (fwPipelinePath) {
       await logPipeline("UPLOAD_REQUEST_SKIPPED", fwPipelinePath, {
         reason: "no_backend_url",
@@ -5144,14 +5183,14 @@ async function uploadCapture(
   try {
     if (fwPipelinePath) {
       await logPipeline("UPLOAD_REQUEST_STARTED", fwPipelinePath, {
-        endpoint: BACKEND_UPLOAD_URL,
+        endpoint: getBackendUploadUrl(),
       });
     }
-    response = await fetch(BACKEND_UPLOAD_URL, {
+    response = await fetch(getBackendUploadUrl(), {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${getSupabaseAnonKey()}`,
+        apikey: getSupabaseAnonKey(),
         "Content-Type": "application/json",
       },
       body: JSON.stringify(payload),
@@ -5168,7 +5207,7 @@ async function uploadCapture(
     }
     let endpointHost = "unknown-endpoint";
     try {
-      endpointHost = new URL(BACKEND_UPLOAD_URL).host;
+      endpointHost = new URL(getBackendUploadUrl()).host;
     } catch (_) {
       // Ignore URL parse errors for fallback messaging.
     }
@@ -5215,7 +5254,7 @@ async function uploadCapture(
 
   lastUploadDebug = {
     at: new Date().toISOString(),
-    endpoint: BACKEND_UPLOAD_URL,
+    endpoint: getBackendUploadUrl(),
     payload,
     http_status: response.status,
     response: responseBody,
@@ -5649,7 +5688,7 @@ async function syncWatchPolicyFromRemote() {
     const msg = await invoke("sync_watch_policy_from_remote", {
       url: WATCH_POLICY_URL,
       business_id: getBusinessId(),
-      authorization: SUPABASE_ANON_KEY || null,
+      authorization: getSupabaseAnonKey() || null,
     });
     console.info("[UCE]", msg);
     await refreshContextState();
