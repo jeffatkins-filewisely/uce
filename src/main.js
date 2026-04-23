@@ -66,6 +66,30 @@ function getBackendUploadUrl() {
 function getSupabaseAnonKey() {
   return (resolvedAnonKey || ENV_SUPABASE_ANON_KEY).trim();
 }
+
+/** No secrets: host + key length only. Call from init or `window.__uceLogConnectionState()`. */
+function logUceConnectionDiagnostics(phase) {
+  const bid = (getBusinessId() || "").trim();
+  const upload = getBackendUploadUrl();
+  const key = getSupabaseAnonKey();
+  let ingestHost = "";
+  try {
+    if (upload) ingestHost = new URL(upload).host;
+  } catch (_) {
+    /* ignore */
+  }
+  const canHeartbeat = !!(bid && upload && key);
+  console.info(
+    `[UCE] ${phase}:`,
+    `business_id=${bid ? "set" : "missing"}`,
+    `ingest_url=${upload ? `set (host: ${ingestHost || "parse?"})` : "missing"}`,
+    `anon_key=${key ? `set (len ${key.length})` : "missing"}`,
+    "→",
+    canHeartbeat
+      ? "real heartbeat will POST agent_version to ingest"
+      : "heartbeat not scheduled (need all three, or set uce-tenant.json / Connect / Vite env)"
+  );
+}
 /** HTTPS JSON endpoint (see watch_policy_sync.rs). When set, replaces local watch lists on a schedule. */
 const WATCH_POLICY_URL = (import.meta.env.VITE_UCE_WATCH_POLICY_URL || "").trim();
 const WATCH_POLICY_POLL_MS = Number(import.meta.env.VITE_UCE_WATCH_POLICY_POLL_MS) || 30 * 60 * 1000;
@@ -74,6 +98,7 @@ const UPLOAD_TIMEOUT_MS = 10000;
 const UCE_HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
 const UCE_HEARTBEAT_FETCH_MS = 15000;
 let uceHeartbeatIntervalId = null;
+let uceLoggedFirstHeartbeatSuccess = false;
 /** Supabase heartbeat may nudge GitHub updater; avoid overlapping / spamming checks. */
 const UCE_HEARTBEAT_NUDGE_UPDATE_COOLDOWN_MS = 2 * 60 * 1000;
 let uceHeartbeatUpdateNudgeInFlight = false;
@@ -568,6 +593,7 @@ async function initTenantContext() {
       );
     }
   }
+  logUceConnectionDiagnostics("startup after load_tenant");
   void ensureUceDesktopPresence();
 }
 
@@ -612,6 +638,13 @@ async function sendUceHeartbeat() {
         const t = await response.text();
         console.warn("[UCE] heartbeat HTTP", response.status, t);
       } else {
+        if (!uceLoggedFirstHeartbeatSuccess) {
+          uceLoggedFirstHeartbeatSuccess = true;
+          console.info(
+            "[UCE] heartbeat OK (portal should show this device with agent_version):",
+            String(version || "0.0.0")
+          );
+        }
         let data = null;
         try {
           const ct = (response.headers.get("content-type") || "").toLowerCase();
@@ -2741,18 +2774,44 @@ function parseUceConnectParams(urlStr) {
 }
 
 async function tryApplyBusinessIdFromUrls(urls) {
-  if (!Array.isArray(urls)) return;
+  if (!Array.isArray(urls)) {
+    console.info("[UCE] tryApply: (not an array) ignored");
+    return;
+  }
+  if (urls.length === 0) {
+    return;
+  }
+  console.info("[UCE] tryApply: received", urls.length, "deep link URL(s)");
   for (const raw of urls) {
     const parsed = parseUceConnectParams(raw);
-    if (!parsed) continue;
+    if (!parsed) {
+      if (/^uce:/i.test(String(raw || "").trim())) {
+        console.info(
+          "[UCE] tryApply: uce: URL is not a /connect?business_id=… form (or missing business_id) — len=",
+          String(raw).length
+        );
+      }
+      continue;
+    }
     const { businessId: id, backendUrl, anonKey } = parsed;
-    if (!isValidUuid(id)) continue;
+    if (!isValidUuid(id)) {
+      console.warn(
+        "[UCE] tryApply: business_id is not a valid UUID — link ignored. Prefix:",
+        String(id).slice(0, 8)
+      );
+      continue;
+    }
     try {
       await invoke("save_tenant_from_connect", {
         business_id: id,
         backend_url: backendUrl || null,
         anon_key: anonKey || null,
       });
+      console.info(
+        "[UCE] tryApply: uce-tenant.json saved; backend/anon in link:",
+        !!(backendUrl && backendUrl.trim()),
+        !!(anonKey && anonKey.trim())
+      );
       await initTenantContext();
       hideTenantOverlayIfShown();
       await setCompactWindowSize();
@@ -2763,14 +2822,25 @@ async function tryApplyBusinessIdFromUrls(urls) {
       console.warn("[UCE] save tenant from deep link:", e);
     }
   }
+  console.warn(
+    "[UCE] tryApply: no URL in this batch updated uce-tenant.json (invalid id, or save error — see above)"
+  );
 }
 
 async function initUceDeepLinkListeners() {
   try {
     const { getCurrent, onOpenUrl } = await import("@tauri-apps/plugin-deep-link");
     const startUrls = await getCurrent();
+    console.info(
+      "[UCE] deep link getCurrent:",
+      startUrls?.length != null ? `${startUrls.length} URL(s)` : "n/a"
+    );
     if (startUrls?.length) await tryApplyBusinessIdFromUrls(startUrls);
     await onOpenUrl((urls) => {
+      console.info(
+        "[UCE] deep link onOpenUrl:",
+        Array.isArray(urls) ? `${urls.length} URL(s)` : "payload"
+      );
       void tryApplyBusinessIdFromUrls(urls);
     });
   } catch (e) {
@@ -6834,6 +6904,7 @@ window.__uceTrainButtonVisible = () => getTrainButtonVisible();
 window.__uceSetTrainButtonVisible = (v) => setTrainButtonVisible(!!v);
 window.__uceSyncWatchPolicy = syncWatchPolicyFromRemote;
 window.__uceGetBusinessId = getBusinessId;
+window.__uceLogConnectionState = () => logUceConnectionDiagnostics("manual (DevTools)");
 window.__uceSaveBusinessId = async (id) => {
   await invoke("save_tenant_business_id", { business_id: String(id).trim() });
   await initTenantContext();

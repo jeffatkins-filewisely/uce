@@ -119,5 +119,11 @@ pub fn save_tenant_from_connect(
             cfg.anon_key = t.to_string();
         }
     }
-    write_config(app, &cfg)
+    write_config(app, &cfg)?;
+    eprintln!(
+        "[UCE] uce-tenant.json written (from_connect) backend_len={} anon_set={}",
+        cfg.backend_url.len(),
+        !cfg.anon_key.is_empty()
+    );
+    Ok(())
 }
