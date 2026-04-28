@@ -1665,6 +1665,33 @@ html, body {
   background: linear-gradient(180deg, #34d399 0%, #16a34a 100%);
 }
 
+/* FileWisely Connection Doctor — visible alternative when tray icon is hidden under ^ */
+.uce-fw-connect {
+  flex-shrink: 0;
+  min-width: 26px;
+  height: 32px;
+  max-height: 32px;
+  margin: 0;
+  padding: 0 5px;
+  border: none;
+  border-radius: 6px;
+  font-size: 9px;
+  font-weight: 800;
+  font-family: "Segoe UI", sans-serif;
+  letter-spacing: 0.02em;
+  color: #dbeafe;
+  background: rgba(30, 58, 138, 0.85);
+  cursor: pointer;
+  line-height: 1;
+  transition: background 120ms ease, color 120ms ease;
+  box-sizing: border-box;
+}
+
+.uce-fw-connect:hover {
+  color: #fff;
+  background: rgba(37, 99, 235, 0.95);
+}
+
 .uce-btn.busy {
   pointer-events: none;
   opacity: 0.8;
@@ -2049,6 +2076,7 @@ html, body {
 #app.uce-tenant-setup-open .uce-debug-sheet,
 #app.uce-tenant-setup-open .toast,
 #app.uce-tenant-setup-open .uce-ro-toggle,
+#app.uce-tenant-setup-open .uce-fw-connect,
 #app.uce-tenant-setup-open .uce-blocking-banner {
   pointer-events: none;
 }
@@ -2562,6 +2590,7 @@ html.uce-runtime-windows #ucePrinterSevereModal {
 #app.uce-printer-severe-open .uce-debug-sheet,
 #app.uce-printer-severe-open .toast,
 #app.uce-printer-severe-open .uce-ro-toggle,
+#app.uce-printer-severe-open .uce-fw-connect,
 #app.uce-printer-severe-open .uce-blocking-banner,
 #app.uce-printer-severe-open .uce-qa-bar {
   pointer-events: none;
@@ -2623,7 +2652,7 @@ html.uce-runtime-windows #ucePrinterSevereModal {
 <div id="uceBlockingBanner" class="uce-blocking-banner" hidden role="alert" aria-live="assertive">
   <span id="uceBlockingBannerText" class="uce-blocking-banner-text">⚠️ FileWisely needs attention — documents may not be captured</span>
 </div>
-<div id="uceEscHint" class="uce-esc-hint" aria-live="polite">Esc — Close hides UCE (still running) · Ctrl+Shift+U show · Ctrl+Shift+Q quit</div>
+<div id="uceEscHint" class="uce-esc-hint" aria-live="polite">Esc — Close hides UCE (still running) · Ctrl+Shift+U show · Ctrl+Shift+Q quit · FW — FileWisely connection · Tray (^ by clock) — Connect / Status</div>
 <div id="uceDebugSheet" class="uce-debug-sheet" hidden aria-hidden="true"></div>
 <div id="uceDock">
 <div class="uce-toolbar">
@@ -2638,6 +2667,9 @@ html.uce-runtime-windows #ucePrinterSevereModal {
   </div>
   <button type="button" class="uce-ro-toggle" id="uceRoPanelBtn" aria-label="Repair order status" title="RO status (FileWisely) — click again to close. Opening the panel keeps the checklist visible while you capture.">
     RO
+  </button>
+  <button type="button" class="uce-fw-connect" id="uceFwConnectBtn" aria-label="FileWisely connection" title="Connect UCE to FileWisely (business ID, ingest URL, anon key). Shift+click: connection status. Same options are on the Windows tray icon (click ^ near the clock if you don’t see UCE).">
+    FW
   </button>
   <button type="button" class="uce-train" id="uceTrainBtn" aria-label="Train workflow for the active window. Alt+click: cycle target (CCC, Tesla EPC, …). Shift+click: forget training. Ctrl+Shift+click: exclude. Ctrl+click: clear exclude." title="Train — uses target workflow (Alt+click to cycle: CCC, Tesla EPC, PartsTrader, OPS Trax, Generic). Shift+click: forget. Ctrl+Shift+click: exclude. Ctrl+click: clear exclude.">
     T
@@ -2678,6 +2710,7 @@ const uceBtn = document.getElementById("uceBtn");
 const uceCaptureModeBadge = document.getElementById("uceCaptureModeBadge");
 const uceDockEl = document.getElementById("uceDock");
 const uceRoPanelBtn = document.getElementById("uceRoPanelBtn");
+const uceFwConnectBtn = document.getElementById("uceFwConnectBtn");
 const uceTrainBtn = document.getElementById("uceTrainBtn");
 const uceSettingsBtn = document.getElementById("uceSettingsBtn");
 const uceHealthStrip = document.getElementById("uceHealthStrip");
@@ -6140,6 +6173,22 @@ uceSettingsBtn.addEventListener("contextmenu", (e) => {
   e.preventDefault();
 });
 
+uceFwConnectBtn?.addEventListener("click", async (e) => {
+  e.stopPropagation();
+  const view = e.shiftKey ? "status" : "connect";
+  try {
+    await invoke("uce_open_connection_doctor_cmd", { view });
+    logEvent("connection_doctor_open", view);
+  } catch (err) {
+    const msg = typeof err === "string" ? err : err?.message || String(err);
+    showToast(msg, "error", 7000);
+    console.warn("[UCE] open connection doctor:", err);
+  }
+});
+uceFwConnectBtn?.addEventListener("contextmenu", (e) => {
+  e.preventDefault();
+});
+
 applyDockChromeFromStorage();
 applyTrainButtonVisibility();
 void setCompactWindowSize();
@@ -6615,13 +6664,13 @@ async function updateUceHealthStrip() {
     uceHealthStrip.classList.remove("uce-health--warn");
     uceHealthStrip.classList.add("uce-health--bad");
     uceHealthStrip.title =
-      "Not connected to FileWisely — use system tray → Connect to FileWisely";
+      "Not connected to FileWisely — tap FW on the dock or tray → Connect to FileWisely";
     uceHealthStrip.setAttribute(
       "aria-label",
-      "UCE not connected — open system tray, Connect to FileWisely, or Connection Status"
+      "UCE not connected — tap FW here, or tray (^ by clock) → Connect / Connection Status"
     );
     const msg =
-      "⚠️ UCE not connected to FileWisely — system tray → Connect to FileWisely (or Connection Status)";
+      "⚠️ UCE not connected to FileWisely — tap FW on this bar, or open the tray (^ by the clock) → Connect to FileWisely";
     if (uceBlockingBannerText) {
       uceBlockingBannerText.textContent = msg;
     }
