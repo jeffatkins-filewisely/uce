@@ -19,7 +19,8 @@
 //! Default folders (if they exist): user Downloads/Desktop/Documents/OneDrive, CCC-related
 //! `ProgramData` paths, classic `C:\\CCC\\WORKFILES`, `C:\\CCC`, **first-level subfolders** under
 //! `C:\\CCC` and under `%ProgramData%\\CCCInformation Services` (skipping obvious non-export dirs),
-//! `%LOCALAPPDATA%\\Temp\\CCC` when present, plus `extra_dirs` from config.
+//! `%LOCALAPPDATA%\\Temp\\CCC` (**always** listed so UCE creates it and watches even before CCC runs),
+//! plus `extra_dirs` from config.
 //!
 //! **Machine seed:** `C:\\FileWisely\\App\\uce-pdf-watch.seed.json` (optional JSON with `extra_dirs` /
 //! `office_intercept_extra_dirs`) is **unioned** with per-user `uce-pdf-watch.json` so elevated installers
@@ -203,7 +204,7 @@ fn push_first_level_subdirs(out: &mut Vec<PathBuf>, parent: &Path, skip_lowercas
     }
 }
 
-fn paths_canon_equal(a: &Path, b: &Path) -> bool {
+pub fn paths_canon_equal(a: &Path, b: &Path) -> bool {
     match (fs::canonicalize(a), fs::canonicalize(b)) {
         (Ok(x), Ok(y)) => x == y,
         _ => a.to_string_lossy().eq_ignore_ascii_case(&b.to_string_lossy()),
@@ -357,8 +358,9 @@ pub fn candidate_pdf_dirs(app: &tauri::AppHandle) -> Vec<PathBuf> {
     // CCC local export root (e.g. Change Request PDFs).
     push_if_exists(&mut dirs, PathBuf::from(r"C:\CCC"));
     push_first_level_subdirs(&mut dirs, Path::new(r"C:\CCC"), &[]);
+    // Always include CCC temp so fresh machines watch even before CCC creates the folder.
     if let Ok(la) = std::env::var("LOCALAPPDATA") {
-        push_if_exists(&mut dirs, PathBuf::from(la).join("Temp").join("CCC"));
+        dirs.push(PathBuf::from(la).join("Temp").join("CCC"));
     }
 
     // FileWisely / shop ingestion (create folder or add to extra_dirs if elsewhere).

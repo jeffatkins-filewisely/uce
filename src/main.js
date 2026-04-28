@@ -7123,6 +7123,10 @@ async function uceRuntimePrinterCheck() {
 
 // Dev helper: call window.__uceDebugState() in DevTools.
 window.__uceDebugState = async () => invoke("get_debug_state");
+/** CCC capture test: polls CCC temp / C:\\CCC roots for a **new** PDF (default 60s). */
+window.__uceCccCaptureTest = async (timeoutSecs = 60) =>
+  invoke("uce_ccc_capture_test", { timeoutSecs });
+window.__uceCccLastFilesSeen = () => invoke("uce_ccc_last_files_seen");
 window.__uceDetectContext = () => {
   const raw = detectUceContext(lastPolledContext, getUceRecognitionSignals());
   const signals = getUceRecognitionSignals();

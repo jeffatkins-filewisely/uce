@@ -21,6 +21,7 @@ use crate::services::converter;
 use crate::services::foreground_telemetry;
 use crate::services::incoming_emit;
 use crate::services::incoming_unique_rename;
+use crate::services::ccc_capture_diag;
 use crate::services::office_printer_route;
 
 fn extension_kind(path: &Path) -> Option<&'static str> {
@@ -227,6 +228,7 @@ fn handle_path(
     match kind {
         "pdf" => {
             eprintln!("[UCE] File detected: {}", path.display());
+            ccc_capture_diag::record_ccc_file_seen(&path, Some(matched_rule));
             let path = incoming_unique_rename::unique_rename_incoming_pdf_if_needed(path);
             if !path.is_file() {
                 return;
@@ -250,6 +252,7 @@ fn handle_path(
             if !path.is_file() {
                 return;
             }
+            ccc_capture_diag::record_ccc_file_seen(&path, Some(matched_rule));
             let app = app.clone();
             let rule = matched_rule;
             thread::spawn(move || {
@@ -312,22 +315,51 @@ pub fn spawn_print_watcher(app: tauri::AppHandle) {
             }
         };
 
+        let ccc_temp = print_config::ccc_temp_watch_path();
         for (root, _rule) in roots_arc.iter() {
+            let is_ccc_appdata_temp = root.to_string_lossy().to_lowercase()
+                == ccc_temp.to_string_lossy().to_lowercase()
+                || pdf_watch_config::paths_canon_equal(root, &ccc_temp);
+            let existed_before = root.exists();
             if let Err(e) = fs::create_dir_all(root) {
                 eprintln!(
                     "UCE print watcher: could not ensure watch dir {}: {}",
                     root.display(),
                     e
                 );
+                continue;
             }
-            if let Err(e) = debouncer
+            if is_ccc_appdata_temp {
+                if existed_before {
+                    eprintln!(
+                        "UCE_CCC_TEMP_FOLDER_DISCOVERED path={}",
+                        root.display()
+                    );
+                } else {
+                    eprintln!(
+                        "UCE_CCC_TEMP_FOLDER_MISSING_CREATED path={}",
+                        root.display()
+                    );
+                }
+            }
+            match debouncer
                 .watcher()
                 .watch(root.as_path(), RecursiveMode::Recursive)
             {
-                eprintln!(
-                    "UCE print watcher: watch failed for {}: {e}",
-                    root.display()
-                );
+                Ok(()) => {
+                    if is_ccc_appdata_temp {
+                        eprintln!(
+                            "UCE_CCC_TEMP_WATCH_ROOT_CONFIGURED path={}",
+                            root.display()
+                        );
+                    }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "UCE print watcher: watch failed for {}: {e}",
+                        root.display()
+                    );
+                }
             }
         }
 

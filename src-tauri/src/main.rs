@@ -82,6 +82,8 @@ struct DebugState {
     memory: RecentMemory,
     known_rules: Vec<Rule>,
     candidate_patterns: Vec<Rule>,
+    /// Last up to 20 file paths seen under CCC-related watch roots (PDF/Office).
+    ccc_last_files_seen: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -1587,7 +1589,24 @@ fn get_debug_state(app: tauri::AppHandle) -> Result<DebugState, String> {
         memory: load_memory(&app)?,
         known_rules: all_built_in_rules(),
         candidate_patterns: candidate_patterns(),
+        ccc_last_files_seen: services::ccc_capture_diag::last_ccc_files_seen(),
     })
+}
+
+/// Poll `%LOCALAPPDATA%\\Temp\\CCC`, `C:\\CCC`, etc. for a **new** PDF (60s default). Blocks in a worker thread.
+#[tauri::command]
+async fn uce_ccc_capture_test(
+    timeout_secs: Option<u64>,
+) -> Result<services::ccc_capture_diag::CccCaptureTestResult, String> {
+    let t = timeout_secs.unwrap_or(60);
+    tokio::task::spawn_blocking(move || services::ccc_capture_diag::run_ccc_capture_test(t))
+        .await
+        .map_err(|e| format!("{e}"))
+}
+
+#[tauri::command]
+fn uce_ccc_last_files_seen() -> Vec<String> {
+    services::ccc_capture_diag::last_ccc_files_seen()
 }
 
 #[tauri::command]
@@ -2038,7 +2057,9 @@ pub fn run() {
             connection_diagnostics::uce_record_heartbeat_outcome,
             connection_diagnostics::uce_get_connection_diagnostics,
             connection_diagnostics::uce_test_ingest_connection,
-            connection_diagnostics::uce_copy_diagnostic_report
+            connection_diagnostics::uce_copy_diagnostic_report,
+            uce_ccc_capture_test,
+            uce_ccc_last_files_seen
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -1,4 +1,5 @@
 pub mod ccc_batch;
+pub mod ccc_capture_diag;
 pub mod ccc_cr_word_autoclose;
 pub mod converter;
 pub mod flight_recorder;

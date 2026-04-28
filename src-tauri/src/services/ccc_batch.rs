@@ -536,6 +536,8 @@ fn handle_ccc_temp_file_inner(app: &tauri::AppHandle, path: PathBuf, source_tag:
         return;
     }
 
+    crate::services::ccc_capture_diag::record_ccc_file_seen(&path, Some("ccc_temp"));
+
     if ext != "pdf" && initial_size < 64 {
         eprintln!(
             "[UCE][ccc] claim_skipped reason=too_small path={} size={}",

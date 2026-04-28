@@ -1,4 +1,10 @@
 [[permission]]
 identifier = "allow-uce-desktop-commands"
 description = "Startup shortcut + machine metadata for uce-ingest heartbeats."
-commands.allow = ["uce_ensure_startup_shortcut", "uce_machine_name", "uce_os_info"]
+commands.allow = [
+  "uce_ensure_startup_shortcut",
+  "uce_machine_name",
+  "uce_os_info",
+  "uce_ccc_capture_test",
+  "uce_ccc_last_files_seen",
+]
