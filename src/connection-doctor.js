@@ -59,9 +59,9 @@ async function renderConnect() {
     }
     try {
       await invoke("save_tenant_manual_all", {
-        business_id: biz,
-        backend_url: url,
-        anon_key: key,
+        businessId: biz,
+        backendUrl: url,
+        anonKey: key,
       });
       await invoke("uce_refresh_tray_connection_tooltip");
       await emit("uce-tenant-saved", {});
@@ -81,14 +81,14 @@ async function renderConnect() {
     }
     try {
       await invoke("save_tenant_manual_all", {
-        business_id: biz,
-        backend_url: url,
-        anon_key: key,
+        businessId: biz,
+        backendUrl: url,
+        anonKey: key,
       });
       await invoke("uce_refresh_tray_connection_tooltip");
       await emit("uce-tenant-saved", {});
       const result = await invoke("uce_test_ingest_connection", {
-        device_id: getUceDeviceId(),
+        deviceId: getUceDeviceId(),
       });
       if (result.ok) {
         showOut(`Success — ${result.category} HTTP ${result.http_status ?? ""}`, true);
