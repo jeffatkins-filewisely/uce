@@ -2853,8 +2853,31 @@ function hideTenantOverlayIfShown() {
 }
 
 /**
+ * POST URL for `uce-claim-handshake` (one-shot token → tenant credentials).
+ * Set `VITE_UCE_HANDSHAKE_CLAIM_URL` on the MSI if links omit `backend_url`.
+ * Otherwise derived from `backend_url` query param or `VITE_UCE_UPLOAD_URL`.
+ */
+function resolveHandshakeClaimUrl(backendUrlHint) {
+  const explicit = (import.meta.env.VITE_UCE_HANDSHAKE_CLAIM_URL || "").trim();
+  if (explicit) return explicit;
+  const base = (
+    (backendUrlHint && String(backendUrlHint).trim()) ||
+    ENV_UCE_UPLOAD_URL ||
+    ""
+  ).trim();
+  if (!base) return "";
+  try {
+    const u = new URL(base);
+    u.pathname = u.pathname.replace(/uce-ingest/i, "uce-claim-handshake");
+    return u.toString();
+  } catch {
+    return "";
+  }
+}
+
+/**
  * Parse `uce://connect?...` (FileWisely "Connect" / "Open in app") including
- * `backend_url` and `anon_key` when the web app passes them.
+ * `backend_url`, `anon_key`, and optional `handshake_token` (server-minted one-shot).
  */
 function parseUceConnectParams(urlStr) {
   try {
@@ -2866,13 +2889,20 @@ function parseUceConnectParams(urlStr) {
       .replace(/^\/+|\/+$/g, "")
       .toLowerCase();
     if (path && path !== "connect") return null;
+    const handshakeToken =
+      (u.searchParams.get("handshake_token") || "").trim() || null;
     const id =
       (u.searchParams.get("business_id") || u.searchParams.get("token") || "")
         .trim() || null;
-    if (!id) return null;
     const backendUrl = (u.searchParams.get("backend_url") || "").trim();
     const anonKey = (u.searchParams.get("anon_key") || "").trim();
-    return { businessId: id, backendUrl, anonKey };
+    if (!handshakeToken && !id) return null;
+    return {
+      businessId: id,
+      backendUrl,
+      anonKey,
+      handshakeToken,
+    };
   } catch {
     return null;
   }
@@ -2892,30 +2922,93 @@ async function tryApplyBusinessIdFromUrls(urls) {
     if (!parsed) {
       if (/^uce:/i.test(String(raw || "").trim())) {
         console.info(
-          "[UCE] tryApply: uce: URL is not a /connect?business_id=… form (or missing business_id) — len=",
+          "[UCE] tryApply: uce: URL rejected (need connect path + business_id and/or handshake_token) — len=",
           String(raw).length
         );
       }
       continue;
     }
-    const { businessId: id, backendUrl, anonKey } = parsed;
-    if (!isValidUuid(id)) {
+
+    if (parsed.handshakeToken) {
+      const claimUrl = resolveHandshakeClaimUrl(parsed.backendUrl);
+      if (!claimUrl) {
+        console.warn(
+          "[UCE] tryApply: handshake_token set but claim URL unknown — set VITE_UCE_HANDSHAKE_CLAIM_URL or pass backend_url on the link"
+        );
+        continue;
+      }
+      try {
+        console.info("[UCE] handshake claim POST", claimUrl);
+        const res = await fetch(claimUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token: parsed.handshakeToken }),
+        });
+        const text = await res.text();
+        let data = null;
+        try {
+          data = text ? JSON.parse(text) : null;
+        } catch {
+          data = null;
+        }
+        if (!res.ok) {
+          console.warn(
+            "[UCE] handshake claim HTTP",
+            res.status,
+            text?.slice?.(0, 400)
+          );
+          continue;
+        }
+        const bid = data?.business_id;
+        if (!bid || !isValidUuid(String(bid))) {
+          console.warn("[UCE] handshake claim: missing or invalid business_id");
+          continue;
+        }
+        await invoke("save_tenant_from_connect", {
+          businessId: String(bid).trim(),
+          backendUrl: data.backend_url ? String(data.backend_url).trim() : null,
+          anonKey: data.anon_key ? String(data.anon_key).trim() : null,
+        });
+        console.info(
+          "UCE_HANDSHAKE_CLAIM_OK business_id=",
+          String(bid).slice(0, 8)
+        );
+        await initTenantContext();
+        hideTenantOverlayIfShown();
+        await setCompactWindowSize();
+        showToast(
+          "Connected FileWisely — handshake completed.",
+          "success"
+        );
+        logEvent(
+          "tenant_connected_via_handshake",
+          `business_id=${bid}`
+        );
+        return;
+      } catch (e) {
+        console.warn("[UCE] handshake claim error:", e);
+        continue;
+      }
+    }
+
+    const id = parsed.businessId;
+    if (!id || !isValidUuid(id)) {
       console.warn(
         "[UCE] tryApply: business_id is not a valid UUID — link ignored. Prefix:",
-        String(id).slice(0, 8)
+        String(id || "").slice(0, 8)
       );
       continue;
     }
     try {
       await invoke("save_tenant_from_connect", {
-        business_id: id,
-        backend_url: backendUrl || null,
-        anon_key: anonKey || null,
+        businessId: id,
+        backendUrl: parsed.backendUrl || null,
+        anonKey: parsed.anonKey || null,
       });
       console.info(
         "[UCE] tryApply: uce-tenant.json saved; backend/anon in link:",
-        !!(backendUrl && backendUrl.trim()),
-        !!(anonKey && anonKey.trim())
+        !!(parsed.backendUrl && parsed.backendUrl.trim()),
+        !!(parsed.anonKey && parsed.anonKey.trim())
       );
       await initTenantContext();
       hideTenantOverlayIfShown();
@@ -2928,7 +3021,7 @@ async function tryApplyBusinessIdFromUrls(urls) {
     }
   }
   console.warn(
-    "[UCE] tryApply: no URL in this batch updated uce-tenant.json (invalid id, or save error — see above)"
+    "[UCE] tryApply: no URL in this batch updated uce-tenant.json (invalid id, handshake failed, or save error — see above)"
   );
 }
 
