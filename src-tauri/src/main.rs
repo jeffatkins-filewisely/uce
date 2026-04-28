@@ -30,10 +30,16 @@ use services::printer_check::{PrinterCheckResult, RepairPrinterResult};
 use pdf_watch_config::PdfWatchConfig;
 use watch_policy_sync::WatchPolicyDocument;
 use std::fs;
+use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tauri::{Emitter, Manager};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::TrayIconBuilder;
+use tauri::webview::PageLoadEvent;
+use tauri::{AppHandle, Emitter, Manager, Url};
 use tokio::time::sleep;
 use types::{RecentMemory, Rule, WatchContext};
 
@@ -181,6 +187,476 @@ fn schedule_startup_position_retry(app: &tauri::AppHandle) {
             }
         });
     });
+}
+
+/// When the dev server is down or packaged assets are missing, WebView2 shows `chrome-error://…`
+/// (“Hmmm… can't reach this page”) inside the tiny overlay — users only see a clipped “Hmm” tile.
+static UCE_WEBVIEW_FINAL_ALERT_SHOWN: AtomicBool = AtomicBool::new(false);
+
+const UCE_SAFE_OVERLAY_W: u32 = 420;
+const UCE_SAFE_OVERLAY_H: u32 = 220;
+const UCE_TOOLBAR_OVERLAY_W: u32 = 58;
+const UCE_TOOLBAR_OVERLAY_H: u32 = 38;
+const UCE_DEV_VITE_ADDR: &str = "127.0.0.1:5173";
+/// Matches `tauri.conf.json` `build.devUrl` when the embedded config omits `dev_url` at runtime.
+const UCE_FALLBACK_DEV_APP_URL: &str = "http://127.0.0.1:5173/";
+
+fn uce_url_looks_like_chrome_interstitial_error(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    lower.starts_with("chrome-error:") || lower.contains("chromewebdata")
+}
+
+/// `about:blank` during WebView2 startup is normal until navigation to devUrl / asset URL completes.
+fn uce_is_about_blank(url: &str) -> bool {
+    matches!(
+        url.trim().to_ascii_lowercase().as_str(),
+        "about:blank" | "about:srcdoc"
+    ) || url
+        .trim()
+        .to_ascii_lowercase()
+        .starts_with("about:blank?")
+}
+
+/// Dev (Vite) or packaged Tauri `tauri.localhost` / asset loading — UI is considered present.
+fn uce_url_looks_like_loaded_app_ui(url: &str) -> bool {
+    let u = url.to_ascii_lowercase();
+    u.contains("127.0.0.1:5173")
+        || u.contains("localhost:5173")
+        || u.contains("tauri.localhost")
+        || u.starts_with("http://tauri.localhost")
+        || u.starts_with("https://tauri.localhost")
+        || u.starts_with("tauri://localhost")
+}
+
+/// Debug builds load from Vite — verify port is listening before showing the tiny overlay.
+fn uce_dev_vite_server_reachable() -> bool {
+    let Ok(addr) = UCE_DEV_VITE_ADDR.parse::<SocketAddr>() else {
+        return false;
+    };
+    TcpStream::connect_timeout(&addr, Duration::from_millis(600)).is_ok()
+}
+
+#[cfg(windows)]
+fn uce_dev_server_unreachable_message_box() {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW;
+    const MB_OK: u32 = 0;
+    const MB_ICONWARNING: u32 = 0x30;
+    const MB_SETFOREGROUND: u32 = 0x0001_0000;
+    let title: Vec<u16> = OsStr::new("UCE — Dev server not running")
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let body = "UCE could not reach the Vite dev server at http://127.0.0.1:5173.\r\n\r\n\
+From the repository root run:\r\n\
+  npm run tauri dev\r\n\r\n\
+Do not start only the .exe while the dev server is stopped. After Vite is running, use the tray menu “Reload UCE Interface”.";
+    let text: Vec<u16> = OsStr::new(body)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            title.as_ptr(),
+            MB_OK | MB_ICONWARNING | MB_SETFOREGROUND,
+        );
+    }
+}
+
+/// In dev, `reload()` while the document is still `about:blank` only reloads blank — it does not open Vite.
+/// Use an explicit `navigate()` to `build.devUrl` (see `tauri.conf.json` `devUrl`) so recovery can succeed.
+fn uce_webview_reload_or_navigate_to_configured_app(
+    w: &tauri::WebviewWindow,
+    app: &AppHandle,
+) -> Result<(), String> {
+    #[cfg(debug_assertions)]
+    {
+        let target = app.config().build.dev_url.clone().or_else(|| {
+            eprintln!(
+                "UCE_WEBVIEW_RECOVERY_NAVIGATE_FALLBACK dev_url_missing_using {}",
+                UCE_FALLBACK_DEV_APP_URL
+            );
+            Url::parse(UCE_FALLBACK_DEV_APP_URL).ok()
+        });
+        if let Some(u) = target {
+            eprintln!("UCE_WEBVIEW_RECOVERY_NAVIGATE {}", u);
+            return w.navigate(u).map_err(|e| e.to_string());
+        }
+    }
+    w.reload().map_err(|e| e.to_string())
+}
+
+/// Wait for `devUrl` (or packaged UI URL) to commit — navigation is asynchronous; `w.url()` can lag `NAVIGATION_STARTED`.
+///
+/// `run_on_main_thread` may return before the closure runs, so we **do not** read shared flags immediately.
+/// Each tick: post read to main thread, then **block on a channel** until the URL snapshot is sent back.
+fn uce_recovery_poll_until_loaded_app_ui(app: &AppHandle, attempt: u32) -> bool {
+    const TICK_MS: u64 = 150;
+    const MAX_TICKS: u32 = 45;
+    const RECV_WAIT: Duration = Duration::from_secs(10);
+
+    for tick in 0..MAX_TICKS {
+        thread::sleep(Duration::from_millis(TICK_MS));
+        let (tx, rx) = mpsc::channel::<(bool, String)>();
+        let app_c = app.clone();
+        if let Err(e) = app.run_on_main_thread(move || {
+            let (ok, url) = match app_c.get_webview_window("main") {
+                Some(w) => match w.url() {
+                    Ok(u) => {
+                        let s = u.as_str().to_string();
+                        (uce_url_looks_like_loaded_app_ui(&s), s)
+                    }
+                    Err(_) => (false, "<url() error>".to_string()),
+                },
+                None => (false, "<no main window>".to_string()),
+            };
+            let _ = tx.send((ok, url));
+        }) {
+            eprintln!("[UCE] recovery poll run_on_main_thread: {e}");
+            continue;
+        }
+
+        match rx.recv_timeout(RECV_WAIT) {
+            Ok((true, url)) => {
+                eprintln!("UCE_WEBVIEW_LOAD_CONFIRMED_BY_URL {}", url);
+                eprintln!(
+                    "UCE_WEBVIEW_CURRENT_URL phase=recovery_poll_loaded attempt={} ticks={}",
+                    attempt,
+                    tick + 1
+                );
+                return true;
+            }
+            Ok((false, url)) => {
+                if tick == 0 || (tick + 1) % 10 == 0 {
+                    eprintln!(
+                        "UCE_WEBVIEW_CURRENT_URL phase=recovery_poll_tick attempt={} tick={} {}",
+                        attempt,
+                        tick + 1,
+                        url
+                    );
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "[UCE] recovery poll channel wait failed attempt={} tick={} err={e:?}",
+                    attempt, tick
+                );
+            }
+        }
+    }
+    false
+}
+
+fn uce_apply_overlay_logical_size(w: &tauri::WebviewWindow, width: u32, height: u32) -> Result<(), String> {
+    use tauri::LogicalSize;
+    const MAX_W: f64 = 700.0;
+    const MAX_H: f64 = 2000.0;
+    let wf = (width as f64).clamp(38.0, MAX_W);
+    let hf = (height as f64).clamp(38.0, MAX_H);
+    let _ = w.set_resizable(true);
+    let _ = w.set_min_size(Some(LogicalSize::new(1.0, 1.0)));
+    let _ = w.set_max_size(Some(LogicalSize::new(MAX_W, MAX_H)));
+    w.set_size(tauri::Size::Logical(LogicalSize::new(wf, hf)))
+        .map_err(|e| e.to_string())?;
+    let _ = w.set_resizable(false);
+    Ok(())
+}
+
+fn uce_bring_overlay_foreground(app: &AppHandle) -> Result<(), String> {
+    let Some(w) = app.get_webview_window("main") else {
+        return Err("no main window".to_string());
+    };
+    w.set_skip_taskbar(true).map_err(|e| e.to_string())?;
+    w.show().map_err(|e| e.to_string())?;
+    w.set_always_on_top(true).map_err(|e| e.to_string())?;
+    w.set_focus().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn uce_tray_reload_interface(app: &AppHandle) -> Result<(), String> {
+    eprintln!("UCE_WEBVIEW_MANUAL_RELOAD");
+    UCE_WEBVIEW_FINAL_ALERT_SHOWN.store(false, Ordering::SeqCst);
+    let Some(w) = app.get_webview_window("main") else {
+        return Err("no main window".to_string());
+    };
+    uce_webview_reload_or_navigate_to_configured_app(&w, app)?;
+    uce_apply_overlay_logical_size(&w, UCE_TOOLBAR_OVERLAY_W, UCE_TOOLBAR_OVERLAY_H)?;
+    uce_bring_overlay_foreground(app)?;
+    let h = app.clone();
+    schedule_startup_position_retry(&h);
+    Ok(())
+}
+
+fn uce_try_build_tray(app: &tauri::AppHandle) {
+    let reload_i = match MenuItem::with_id(
+        app,
+        "uce-tray-reload-ui",
+        "Reload UCE Interface",
+        true,
+        None::<&str>,
+    ) {
+        Ok(i) => i,
+        Err(e) => {
+            eprintln!("[UCE] tray menu Reload item: {e}");
+            return;
+        }
+    };
+    let quit_i = match MenuItem::with_id(
+        app,
+        "uce-tray-quit",
+        "Quit UCE",
+        true,
+        None::<&str>,
+    ) {
+        Ok(i) => i,
+        Err(e) => {
+            eprintln!("[UCE] tray menu Quit item: {e}");
+            return;
+        }
+    };
+    let menu = match Menu::with_items(app, &[&reload_i, &quit_i]) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("[UCE] tray menu: {e}");
+            return;
+        }
+    };
+
+    let mut builder = TrayIconBuilder::new()
+        .menu(&menu)
+        .on_menu_event(|app, event| {
+            match event.id.as_ref() {
+                "uce-tray-reload-ui" => {
+                    if let Err(e) = uce_tray_reload_interface(app) {
+                        eprintln!("[UCE] tray reload: {e}");
+                    }
+                }
+                "uce-tray-quit" => {
+                    app.exit(0);
+                }
+                _ => {}
+            }
+        });
+
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+
+    if let Err(e) = builder.build(app) {
+        eprintln!("[UCE] tray icon build failed: {e}");
+    }
+}
+
+/// After startup, verify the webview reached the app UI. `about:blank` on pass 1 is treated as timing only.
+fn schedule_uce_webview_load_failure_check(app: AppHandle) {
+    thread::spawn(move || {
+        thread::sleep(Duration::from_secs(2));
+        let app2 = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            uce_webview_startup_health_pass(app2, 1);
+        });
+    });
+}
+
+/// Pass 1 @ ~2s: if UI not loaded yet (e.g. `about:blank`), wait and re-check once — no error for blank alone.
+fn uce_webview_startup_health_pass(app: AppHandle, pass: u32) {
+    let Some(w) = app.get_webview_window("main") else {
+        return;
+    };
+    let Ok(current) = w.url() else {
+        return;
+    };
+    let url_str = current.as_str();
+    eprintln!(
+        "UCE_WEBVIEW_CURRENT_URL phase=startup_check pass={} {}",
+        pass, url_str
+    );
+
+    if uce_url_looks_like_loaded_app_ui(url_str) {
+        return;
+    }
+
+    if uce_url_looks_like_chrome_interstitial_error(url_str) {
+        eprintln!("UCE_WEBVIEW_CHROME_ERROR_DETECTED {}", url_str);
+        uce_run_chrome_error_recovery_or_alert(app);
+        return;
+    }
+
+    if pass == 1 {
+        let app_delayed = app.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_secs(3));
+            let app_d = app_delayed.clone();
+            let _ = app_delayed.run_on_main_thread(move || {
+                uce_webview_startup_health_pass(app_d, 2);
+            });
+        });
+        return;
+    }
+
+    if uce_is_about_blank(url_str) {
+        eprintln!("UCE_WEBVIEW_RELOAD_FAILED reason=startup_blank_stuck url={}", url_str);
+    } else {
+        eprintln!(
+            "UCE_WEBVIEW_RELOAD_FAILED reason=dev_ui_not_reached url={}",
+            url_str
+        );
+    }
+    uce_run_chrome_error_recovery_or_alert(app);
+}
+
+/// Resize to a readable overlay, reload up to 5×, then MessageBox if the UI still will not load.
+fn uce_run_chrome_error_recovery_or_alert(app: AppHandle) {
+    let Some(w) = app.get_webview_window("main") else {
+        return;
+    };
+    let Ok(current) = w.url() else {
+        return;
+    };
+    let url_str = current.as_str();
+    eprintln!("UCE_WEBVIEW_CURRENT_URL phase=recovery_begin {}", url_str);
+    if uce_url_looks_like_chrome_interstitial_error(url_str) {
+        eprintln!("UCE_WEBVIEW_CHROME_ERROR_DETECTED {}", url_str);
+    }
+
+    if let Err(e) = uce_apply_overlay_logical_size(&w, UCE_SAFE_OVERLAY_W, UCE_SAFE_OVERLAY_H) {
+        eprintln!("UCE_OVERLAY_SAFE_RESIZE_AFTER_LOAD_FAILURE error={}", e);
+    } else {
+        eprintln!("UCE_OVERLAY_SAFE_RESIZE_AFTER_LOAD_FAILURE w={} h={}", UCE_SAFE_OVERLAY_W, UCE_SAFE_OVERLAY_H);
+    }
+
+    let app_thread = app.clone();
+    thread::spawn(move || {
+        for attempt in 1u32..=5 {
+            let app_r = app_thread.clone();
+            let _ = app_thread.run_on_main_thread(move || {
+                if let Some(w) = app_r.get_webview_window("main") {
+                    eprintln!("UCE_WEBVIEW_RELOAD_ATTEMPT {}", attempt);
+                    if let Err(e) =
+                        uce_webview_reload_or_navigate_to_configured_app(&w, &app_r)
+                    {
+                        eprintln!("UCE_WEBVIEW_RELOAD_FAILED reload_call_err={}", e);
+                    }
+                }
+            });
+
+            if uce_recovery_poll_until_loaded_app_ui(&app_thread, attempt) {
+                let app_v = app_thread.clone();
+                let att = attempt;
+                let _ = app_thread.run_on_main_thread(move || {
+                    let Some(w) = app_v.get_webview_window("main") else {
+                        return;
+                    };
+                    eprintln!("UCE_WEBVIEW_RELOAD_SUCCESS attempt={}", att);
+                    if let Err(e) = uce_apply_overlay_logical_size(
+                        &w,
+                        UCE_TOOLBAR_OVERLAY_W,
+                        UCE_TOOLBAR_OVERLAY_H,
+                    ) {
+                        eprintln!("[UCE] post-recovery resize: {}", e);
+                    }
+                    let _ = w.show();
+                    let h = app_v.clone();
+                    let _ = uce_bring_overlay_foreground(&app_v);
+                    schedule_startup_position_retry(&h);
+                });
+                return;
+            }
+
+            let app_snap = app_thread.clone();
+            let att = attempt;
+            let _ = app_thread.run_on_main_thread(move || {
+                if let Some(w) = app_snap.get_webview_window("main") {
+                    if let Ok(u) = w.url() {
+                        eprintln!(
+                            "UCE_WEBVIEW_CURRENT_URL phase=after_reload_try attempt={} {}",
+                            att,
+                            u.as_str()
+                        );
+                        eprintln!(
+                            "UCE_WEBVIEW_RELOAD_FAILED attempt={} url={} reason=poll_timeout",
+                            att,
+                            u.as_str()
+                        );
+                    }
+                }
+            });
+        }
+
+        let app_end = app_thread.clone();
+        let _ = app_thread.run_on_main_thread(move || {
+            uce_webview_finish_recovery_if_still_broken(app_end);
+        });
+    });
+}
+
+fn uce_webview_finish_recovery_if_still_broken(app: AppHandle) {
+    let Some(w) = app.get_webview_window("main") else {
+        return;
+    };
+    let Ok(current) = w.url() else {
+        return;
+    };
+    let url_str = current.as_str();
+    eprintln!("UCE_WEBVIEW_CURRENT_URL phase=after_retries {}", url_str);
+    if uce_url_looks_like_loaded_app_ui(url_str) {
+        return;
+    }
+    eprintln!("UCE_WEBVIEW_RELOAD_FAILED after_all_retries url={}", url_str);
+
+    if UCE_WEBVIEW_FINAL_ALERT_SHOWN
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return;
+    }
+    #[cfg(windows)]
+    uce_webview_load_failed_native_message_box();
+    #[cfg(not(windows))]
+    eprintln!(
+        "[UCE] UI failed to load. Dev: run `npm run tauri dev` from the repo. Packaged: reinstall UCE / FileWisely."
+    );
+}
+
+/// Windows-only: full-screen dialog so the message is never clipped by the 38×38 overlay.
+#[cfg(windows)]
+fn uce_webview_load_failed_native_message_box() {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW;
+    const MB_OK: u32 = 0;
+    const MB_ICONWARNING: u32 = 0x30;
+    const MB_SETFOREGROUND: u32 = 0x0001_0000;
+    let title: Vec<u16> = OsStr::new("UCE — Could not load interface")
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let body = if cfg!(debug_assertions) {
+        "The UCE window could not load the app. The WebView is showing Edge’s “can’t reach this page” screen.\r\n\r\n\
+If you are developing: from the repository root run:\r\n\
+  npm run tauri dev\r\n\
+That starts Vite on http://127.0.0.1:5173 and then launches UCE. Do not run only the .exe while the dev server is stopped.\r\n\r\n\
+If you opened a packaged build: use Repair in Add/Remove Programs or reinstall the FileWisely / UCE installer."
+    } else {
+        "UCE could not load its user interface from disk (the embedded web assets failed to load).\r\n\r\n\
+Try repairing or reinstalling UCE from your FileWisely / shop installer.\r\n\r\n\
+Developers: run `npm run tauri dev` from the repo (Vite on 127.0.0.1:5173) — do not start only the .exe without the dev server."
+    };
+    let text: Vec<u16> = OsStr::new(body)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            title.as_ptr(),
+            MB_OK | MB_ICONWARNING | MB_SETFOREGROUND,
+        );
+    }
 }
 
 #[tauri::command]
@@ -939,20 +1415,12 @@ async fn uce_printer_severe_native_alert() -> Result<(), String> {
 }
 
 #[tauri::command]
-fn uce_set_overlay_logical_size(window: tauri::Window, width: u32, height: u32) -> Result<(), String> {
-    use tauri::LogicalSize;
-    const MAX_W: f64 = 700.0;
-    const MAX_H: f64 = 2000.0;
-    let w = (width as f64).clamp(38.0, MAX_W);
-    let h = (height as f64).clamp(38.0, MAX_H);
-    let _ = window.set_resizable(true);
-    let _ = window.set_min_size(Some(LogicalSize::new(1.0, 1.0)));
-    let _ = window.set_max_size(Some(LogicalSize::new(MAX_W, MAX_H)));
-    window
-        .set_size(tauri::Size::Logical(LogicalSize::new(w, h)))
-        .map_err(|e| e.to_string())?;
-    let _ = window.set_resizable(false);
-    Ok(())
+fn uce_set_overlay_logical_size(
+    window: tauri::WebviewWindow,
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
+    uce_apply_overlay_logical_size(&window, width, height)
 }
 
 #[tauri::command]
@@ -1297,6 +1765,21 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(global_shortcut_plugin)
         .plugin(tauri_plugin_deep_link::init())
+        .on_page_load(|_webview, payload| {
+            match payload.event() {
+                PageLoadEvent::Started => {
+                    eprintln!("UCE_WEBVIEW_NAVIGATION_STARTED {}", payload.url());
+                }
+                PageLoadEvent::Finished => {
+                    let u = payload.url().as_str();
+                    eprintln!("UCE_WEBVIEW_NAVIGATION_FINISHED {}", u);
+                    eprintln!("UCE_WEBVIEW_CURRENT_URL {}", u);
+                    if uce_url_looks_like_chrome_interstitial_error(u) {
+                        eprintln!("UCE_WEBVIEW_CHROME_ERROR_DETECTED {}", u);
+                    }
+                }
+            }
+        })
         .setup(|app| {
             #[cfg(windows)]
             {
@@ -1305,13 +1788,40 @@ pub fn run() {
                     eprintln!("[UCE] deep_link register_all: {}", e);
                 }
             }
+            uce_try_build_tray(app.handle());
+
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_skip_taskbar(true);
-                let _ = window.show();
                 let _ = window.set_resizable(false);
                 let h = app.handle().clone();
-                apply_startup_window_position(&h, &window);
-                schedule_startup_position_retry(&h);
+
+                #[cfg(debug_assertions)]
+                let dev_server_ok = {
+                    eprintln!(
+                        "UCE_WEBVIEW_CURRENT_URL phase=dev_listen target=http://{}",
+                        UCE_DEV_VITE_ADDR
+                    );
+                    let ok = uce_dev_vite_server_reachable();
+                    eprintln!("UCE_WEBVIEW_CURRENT_URL phase=dev_listen_ok value={}", ok);
+                    ok
+                };
+                #[cfg(not(debug_assertions))]
+                let dev_server_ok = true;
+
+                if cfg!(debug_assertions) && !dev_server_ok {
+                    let _ = window.hide();
+                    #[cfg(windows)]
+                    uce_dev_server_unreachable_message_box();
+                    #[cfg(not(windows))]
+                    eprintln!(
+                        "[UCE] dev server not reachable at {}; run npm run tauri dev",
+                        UCE_DEV_VITE_ADDR
+                    );
+                } else {
+                    let _ = window.show();
+                    apply_startup_window_position(&h, &window);
+                    schedule_startup_position_retry(&h);
+                }
 
                 // Alt+F4 / close: keep agent running (heartbeats, watchers). Use Ctrl+Shift+Q to exit.
                 let app_handle = app.handle().clone();
@@ -1326,6 +1836,10 @@ pub fn run() {
                         }
                     }
                 });
+
+                if dev_server_ok {
+                    schedule_uce_webview_load_failure_check(h.clone());
+                }
             }
             #[cfg(windows)]
             {

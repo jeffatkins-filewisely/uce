@@ -32,6 +32,18 @@ powershell -ExecutionPolicy Bypass -File .\installer\setup-filewisely-printer.ps
 
 Optional: add **`installer/pdf-printer/bullzip.exe`** so setup can install Bullzip silently. Full notes: **`installer/README-filewisely-printer.md`**.
 
+## Troubleshooting: tiny “Hmm” tile or Edge error page in the overlay
+
+WebView2 loads the UI from **`http://127.0.0.1:5173`** in development (see `tauri.conf.json` `devUrl`). If you start only the `.exe` while Vite is not running, the engine shows Chromium’s **“can’t reach this page”** (`chrome-error://…`) inside the small transparent window — it often looks like a clipped **“Hmm”** box.
+
+**Fix:** from the repo root run `npm run tauri dev` (starts Vite with `--strictPort` on 5173, then UCE). For installed MSI builds, repair/reinstall so bundled assets under the app install path are intact.
+
+UCE **resizes** to a readable size when that error is detected, **retries** reloading the webview a few times, then shows a Windows dialog if it still fails. Use the **system tray** menu **“Reload UCE Interface”** after starting Vite or repairing an install. In **debug** builds, startup checks port **5173** before showing the overlay so you are not left with only the tiny tile.
+
+Navigation logging (`UCE_WEBVIEW_NAVIGATION_*`, `UCE_WEBVIEW_CURRENT_URL`) comes from Tauri’s global `on_page_load` hook. **`about:blank`** during the first startup check is treated as timing only; a second check runs a few seconds later before any recovery runs.
+
+In **development**, recovery and tray reload call **`navigate()`** to `build.devUrl` (`http://127.0.0.1:5173`) instead of only **`reload()`**, because reloading **`about:blank`** never opens Vite (you would otherwise stay on blank through every retry). If the embedded config omits **`dev_url`**, the code falls back to **`http://127.0.0.1:5173/`** and logs **`UCE_WEBVIEW_RECOVERY_NAVIGATE_FALLBACK`**. After each navigate, recovery **polls** the WebView URL for several seconds (navigation is async; a single short sleep was incorrectly marking success before `127.0.0.1:5173` appeared in **`w.url()`**). Logs include **`UCE_WEBVIEW_RECOVERY_NAVIGATE`** and **`UCE_WEBVIEW_CURRENT_URL phase=recovery_poll_loaded`** when the UI commits.
+
 ## Recommended IDE Setup
 
 - [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
