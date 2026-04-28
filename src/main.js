@@ -33,6 +33,7 @@ import {
   recordOfficePrintPromptForContext,
   recordUserActivity,
 } from "./uceContextSignals.js";
+import { getUceDeviceId } from "./uceDeviceId.js";
 import { buildUceReasonPayload } from "./uceContextReasonLayer.js";
 import {
   armPendingMissingSuppressBuffer,
@@ -594,6 +595,8 @@ async function initTenantContext() {
     }
   }
   logUceConnectionDiagnostics("startup after load_tenant");
+  void recordStartupConnectionGapOutcome();
+  void refreshTrayConnectionTooltip();
   void ensureUceDesktopPresence();
 }
 
@@ -637,6 +640,12 @@ async function sendUceHeartbeat() {
       if (!response.ok) {
         const t = await response.text();
         console.warn("[UCE] heartbeat HTTP", response.status, t);
+        void invoke("uce_record_heartbeat_outcome", {
+          success: false,
+          category: categorizeHeartbeatHttpStatus(response.status),
+          http_status: response.status,
+          message: t.slice(0, 500),
+        }).catch(() => {});
       } else {
         if (!uceLoggedFirstHeartbeatSuccess) {
           uceLoggedFirstHeartbeatSuccess = true;
@@ -657,6 +666,12 @@ async function sendUceHeartbeat() {
         if (data && data.update_available === true) {
           void maybeRunUpdateFromHeartbeatNudge();
         }
+        void invoke("uce_record_heartbeat_outcome", {
+          success: true,
+          category: "HEARTBEAT_OK",
+          http_status: response.status,
+          message: "",
+        }).catch(() => {});
       }
     } finally {
       clearTimeout(timeoutId);
@@ -664,8 +679,20 @@ async function sendUceHeartbeat() {
   } catch (e) {
     if (e?.name === "AbortError") {
       console.warn("[UCE] heartbeat timed out");
+      void invoke("uce_record_heartbeat_outcome", {
+        success: false,
+        category: "NETWORK_ERROR",
+        http_status: null,
+        message: "heartbeat fetch timed out",
+      }).catch(() => {});
     } else {
       console.warn("[UCE] heartbeat:", e);
+      void invoke("uce_record_heartbeat_outcome", {
+        success: false,
+        category: "NETWORK_ERROR",
+        http_status: null,
+        message: String(e).slice(0, 500),
+      }).catch(() => {});
     }
   }
 }
@@ -710,6 +737,51 @@ if (typeof window !== "undefined") {
 
 function getBusinessId() {
   return resolvedBusinessId;
+}
+
+function isIngestFullyConfigured() {
+  const bid = (getBusinessId() || "").trim();
+  return !!(bid && getBackendUploadUrl() && getSupabaseAnonKey());
+}
+
+async function refreshTrayConnectionTooltip() {
+  try {
+    await invoke("uce_refresh_tray_connection_tooltip");
+  } catch (_) {
+    /* ignore */
+  }
+}
+
+let uceStartupConnectionGapRecorded = false;
+async function recordStartupConnectionGapOutcome() {
+  if (uceStartupConnectionGapRecorded) return;
+  const bid = (getBusinessId() || "").trim();
+  const upload = getBackendUploadUrl();
+  const key = getSupabaseAnonKey();
+  if (bid && upload && key) return;
+  uceStartupConnectionGapRecorded = true;
+  let category = "MISSING_CONFIG";
+  if (!bid) category = "MISSING_BUSINESS_ID";
+  else if (!upload) category = "MISSING_BACKEND_URL";
+  else if (!key) category = "MISSING_AUTH_KEY";
+  try {
+    await invoke("uce_record_heartbeat_outcome", {
+      success: false,
+      category,
+      http_status: null,
+      message: "startup: not all ingest fields set",
+    });
+  } catch (_) {
+    /* ignore */
+  }
+}
+
+function categorizeHeartbeatHttpStatus(status) {
+  if (status === 401) return "HTTP_401";
+  if (status === 403) return "HTTP_403";
+  if (status === 404) return "HTTP_404";
+  if (status >= 500 && status <= 599) return "HTTP_500";
+  return "UNKNOWN";
 }
 
 /**
@@ -3341,13 +3413,7 @@ function scheduleFitWindowToToast() {
 }
 
 function getDeviceId() {
-  const key = "uce_device_id";
-  let id = localStorage.getItem(key);
-  if (!id) {
-    id = `uce-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    localStorage.setItem(key, id);
-  }
-  return id;
+  return getUceDeviceId();
 }
 
 /** Statuses FileWisely (or gateway) must send explicitly — we never infer “missing” from silence. */
@@ -6545,6 +6611,34 @@ function buildBlockingBannerDetail(printerOk, uploadsOk, up, stale) {
 
 async function updateUceHealthStrip() {
   if (!uceHealthStrip) return;
+  if (!isIngestFullyConfigured()) {
+    uceHealthStrip.classList.remove("uce-health--warn");
+    uceHealthStrip.classList.add("uce-health--bad");
+    uceHealthStrip.title =
+      "Not connected to FileWisely — use system tray → Connect to FileWisely";
+    uceHealthStrip.setAttribute(
+      "aria-label",
+      "UCE not connected — open system tray, Connect to FileWisely, or Connection Status"
+    );
+    const msg =
+      "⚠️ UCE not connected to FileWisely — system tray → Connect to FileWisely (or Connection Status)";
+    if (uceBlockingBannerText) {
+      uceBlockingBannerText.textContent = msg;
+    }
+    if (uceBlockingBanner) {
+      uceBlockingBanner.title = msg;
+      uceBlockingBanner.setAttribute("aria-label", msg);
+    }
+    if (isUceSuppressBlockingHealthBanner()) {
+      hideBlockingBanner();
+    } else if (uceBlockingBanner) {
+      uceBlockingBanner.hidden = false;
+      appEl.classList.add("uce-blocking-banner-visible");
+      healthBannerVisible = true;
+    }
+    void setCompactWindowSize();
+    return;
+  }
   if (Date.now() - lastPrinterHealthFetch > 15_000) {
     await refreshPrinterHealthFromBackend();
   }
@@ -6729,6 +6823,16 @@ async function uceRuntimePrinterCheck() {
   try {
     await initTenantContext();
     await initUceDeepLinkListeners();
+    try {
+      await listen("uce-tenant-saved", async () => {
+        await initTenantContext();
+        await refreshTrayConnectionTooltip();
+        await ensureUceDesktopPresence();
+        await updateUceHealthStrip();
+      });
+    } catch (e) {
+      console.warn("[UCE] uce-tenant-saved listener:", e);
+    }
     /* Register before tenant dialog / long init: single-instance forwards `uce://` via emit; a late
      * listener used to miss the event if Connect fired while the setup overlay was open. */
     try {

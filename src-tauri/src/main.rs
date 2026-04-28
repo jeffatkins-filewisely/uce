@@ -9,6 +9,8 @@ mod pdf_watch_config;
 mod services;
 mod tenant_config;
 mod types;
+mod uce_webview_url;
+mod connection_diagnostics;
 mod watch_policy_sync;
 
 use context_rules::{
@@ -37,8 +39,9 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::menu::{Menu, MenuItem};
-use tauri::tray::TrayIconBuilder;
-use tauri::webview::PageLoadEvent;
+use tauri::tray::{TrayIconBuilder, TrayIconId};
+use tauri::webview::{PageLoadEvent, WebviewWindowBuilder};
+use tauri::WebviewUrl;
 use tauri::{AppHandle, Emitter, Manager, Url};
 use tokio::time::sleep;
 use types::{RecentMemory, Rule, WatchContext};
@@ -219,13 +222,7 @@ fn uce_is_about_blank(url: &str) -> bool {
 
 /// Dev (Vite) or packaged Tauri `tauri.localhost` / asset loading — UI is considered present.
 fn uce_url_looks_like_loaded_app_ui(url: &str) -> bool {
-    let u = url.to_ascii_lowercase();
-    u.contains("127.0.0.1:5173")
-        || u.contains("localhost:5173")
-        || u.contains("tauri.localhost")
-        || u.starts_with("http://tauri.localhost")
-        || u.starts_with("https://tauri.localhost")
-        || u.starts_with("tauri://localhost")
+    uce_webview_url::url_looks_like_loaded_app_ui(url)
 }
 
 /// Debug builds load from Vite — verify port is listening before showing the tiny overlay.
@@ -376,6 +373,86 @@ fn uce_bring_overlay_foreground(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+fn uce_tray_tooltip(app: &AppHandle) -> String {
+    match tenant_config::load_tenant_config(app) {
+        Ok(cfg) => {
+            let ok = !cfg.business_id.trim().is_empty()
+                && !cfg.backend_url.trim().is_empty()
+                && !cfg.anon_key.trim().is_empty();
+            if ok {
+                "UCE — Connected (FileWisely)".to_string()
+            } else {
+                "UCE — Not connected — use tray → Connect to FileWisely".to_string()
+            }
+        }
+        Err(_) => "UCE — Not connected".to_string(),
+    }
+}
+
+fn uce_open_connection_doctor(app: &AppHandle, view: &str) -> Result<(), String> {
+    let label = "connection-doctor";
+    let v = if view == "status" { "status" } else { "connect" };
+    let webview_url = if cfg!(debug_assertions) {
+        let path = format!("connection-doctor.html?view={v}");
+        let u = Url::parse(&format!("http://127.0.0.1:5173/{path}")).map_err(|e| e.to_string())?;
+        WebviewUrl::External(u)
+    } else {
+        let u = Url::parse(&format!(
+            "http://tauri.localhost/connection-doctor.html#{v}"
+        ))
+        .map_err(|e| e.to_string())?;
+        WebviewUrl::External(u)
+    };
+
+    if let Some(win) = app.get_webview_window(label) {
+        let u = if let WebviewUrl::External(u) = &webview_url {
+            u.clone()
+        } else {
+            return Err("connection doctor: unexpected WebviewUrl".to_string());
+        };
+        win.navigate(u).map_err(|e| e.to_string())?;
+        win.show().map_err(|e| e.to_string())?;
+        win.set_focus().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    WebviewWindowBuilder::new(app, label, webview_url)
+        .title("UCE — FileWisely connection")
+        .inner_size(520.0, 580.0)
+        .min_inner_size(420.0, 400.0)
+        .resizable(true)
+        .decorations(true)
+        .center()
+        .build()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn uce_open_connection_doctor_cmd(app: AppHandle, view: String) -> Result<(), String> {
+    uce_open_connection_doctor(&app, &view)
+}
+
+#[tauri::command]
+fn uce_refresh_tray_connection_tooltip(app: AppHandle) -> Result<(), String> {
+    let tip = uce_tray_tooltip(&app);
+    let tid = TrayIconId::new("uce-main-tray");
+    if let Some(tray) = app.tray_by_id(&tid) {
+        tray.set_tooltip(Some(tip)).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn save_tenant_manual_all(
+    app: AppHandle,
+    business_id: String,
+    backend_url: String,
+    anon_key: String,
+) -> Result<(), String> {
+    tenant_config::save_tenant_manual_all(&app, business_id, backend_url, anon_key)
+}
+
 fn uce_tray_reload_interface(app: &AppHandle) -> Result<(), String> {
     eprintln!("UCE_WEBVIEW_MANUAL_RELOAD");
     UCE_WEBVIEW_FINAL_ALERT_SHOWN.store(false, Ordering::SeqCst);
@@ -391,6 +468,45 @@ fn uce_tray_reload_interface(app: &AppHandle) -> Result<(), String> {
 }
 
 fn uce_try_build_tray(app: &tauri::AppHandle) {
+    let status_i = match MenuItem::with_id(
+        app,
+        "uce-tray-status",
+        "Connection Status",
+        true,
+        None::<&str>,
+    ) {
+        Ok(i) => i,
+        Err(e) => {
+            eprintln!("[UCE] tray Connection Status: {e}");
+            return;
+        }
+    };
+    let connect_i = match MenuItem::with_id(
+        app,
+        "uce-tray-connect",
+        "Connect to FileWisely",
+        true,
+        None::<&str>,
+    ) {
+        Ok(i) => i,
+        Err(e) => {
+            eprintln!("[UCE] tray Connect item: {e}");
+            return;
+        }
+    };
+    let copy_i = match MenuItem::with_id(
+        app,
+        "uce-tray-copy-report",
+        "Copy Diagnostic Report",
+        true,
+        None::<&str>,
+    ) {
+        Ok(i) => i,
+        Err(e) => {
+            eprintln!("[UCE] tray Copy Report: {e}");
+            return;
+        }
+    };
     let reload_i = match MenuItem::with_id(
         app,
         "uce-tray-reload-ui",
@@ -417,7 +533,12 @@ fn uce_try_build_tray(app: &tauri::AppHandle) {
             return;
         }
     };
-    let menu = match Menu::with_items(app, &[&reload_i, &quit_i]) {
+    let menu = match Menu::with_items(
+        app,
+        &[
+            &status_i, &connect_i, &copy_i, &reload_i, &quit_i,
+        ],
+    ) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("[UCE] tray menu: {e}");
@@ -425,10 +546,28 @@ fn uce_try_build_tray(app: &tauri::AppHandle) {
         }
     };
 
-    let mut builder = TrayIconBuilder::new()
+    let tooltip = uce_tray_tooltip(app);
+    let mut builder = TrayIconBuilder::with_id(TrayIconId::new("uce-main-tray"))
+        .tooltip(&tooltip)
         .menu(&menu)
         .on_menu_event(|app, event| {
             match event.id.as_ref() {
+                "uce-tray-status" => {
+                    if let Err(e) = uce_open_connection_doctor(app, "status") {
+                        eprintln!("[UCE] tray Connection Status: {e}");
+                    }
+                }
+                "uce-tray-connect" => {
+                    if let Err(e) = uce_open_connection_doctor(app, "connect") {
+                        eprintln!("[UCE] tray Connect: {e}");
+                    }
+                }
+                "uce-tray-copy-report" => {
+                    match connection_diagnostics::uce_copy_diagnostic_report(app.clone()) {
+                        Ok(_) => eprintln!("[UCE] diagnostic report copied to clipboard"),
+                        Err(e) => eprintln!("[UCE] copy diagnostic report: {e}"),
+                    }
+                }
                 "uce-tray-reload-ui" => {
                     if let Err(e) = uce_tray_reload_interface(app) {
                         eprintln!("[UCE] tray reload: {e}");
@@ -1892,7 +2031,14 @@ pub fn run() {
             uce_ccc_cr_manual_close_word,
             uce_machine_name,
             uce_os_info,
-            uce_ensure_startup_shortcut
+            uce_ensure_startup_shortcut,
+            save_tenant_manual_all,
+            uce_open_connection_doctor_cmd,
+            uce_refresh_tray_connection_tooltip,
+            connection_diagnostics::uce_record_heartbeat_outcome,
+            connection_diagnostics::uce_get_connection_diagnostics,
+            connection_diagnostics::uce_test_ingest_connection,
+            connection_diagnostics::uce_copy_diagnostic_report
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

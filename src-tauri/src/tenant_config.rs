@@ -95,6 +95,36 @@ pub fn save_tenant_business_id(app: &tauri::AppHandle, business_id: String) -> R
 
 /// `uce://connect` (or first launch) — set `business_id` and optional ingest credentials.
 /// `None` for `backend_url` / `anon_key` leaves those fields unchanged on disk.
+/// Replace all tenant fields at once (manual Connection Doctor form).
+pub fn save_tenant_manual_all(
+    app: &tauri::AppHandle,
+    business_id: String,
+    backend_url: String,
+    anon_key: String,
+) -> Result<(), String> {
+    let id = business_id.trim();
+    if id.is_empty() {
+        return Err("business_id is empty".to_string());
+    }
+    let cfg = TenantConfig {
+        business_id: id.to_string(),
+        backend_url: backend_url.trim().to_string(),
+        anon_key: anon_key.trim().to_string(),
+    };
+    write_config(app, &cfg)?;
+    eprintln!(
+        "[UCE] uce-tenant.json written (manual) backend_len={} anon_len={}",
+        cfg.backend_url.len(),
+        cfg.anon_key.len()
+    );
+    Ok(())
+}
+
+pub fn tenant_config_path_for_display(app: &tauri::AppHandle) -> Result<String, String> {
+    let p = tenant_file(app)?;
+    Ok(p.to_string_lossy().into_owned())
+}
+
 pub fn save_tenant_from_connect(
     app: &tauri::AppHandle,
     business_id: String,
