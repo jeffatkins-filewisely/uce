@@ -113,6 +113,12 @@ pub fn save_tenant_manual_all(
     };
     write_config(app, &cfg)?;
     eprintln!(
+        "UCE_TENANT_CONFIG_SAVED source=manual_all business_id_len={} backend_len={} anon_len={}",
+        cfg.business_id.len(),
+        cfg.backend_url.len(),
+        cfg.anon_key.len()
+    );
+    eprintln!(
         "[UCE] uce-tenant.json written (manual) backend_len={} anon_len={}",
         cfg.backend_url.len(),
         cfg.anon_key.len()

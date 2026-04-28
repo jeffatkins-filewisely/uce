@@ -1,0 +1,16 @@
+[[permission]]
+identifier = "allow-uce-tenant-connection"
+description = "Tenant config (uce-tenant.json) and Connection Doctor: manual save, diagnostics, heartbeat recording."
+commands.allow = [
+  "load_tenant_config",
+  "load_tenant_business_id",
+  "save_tenant_business_id",
+  "save_tenant_from_connect",
+  "save_tenant_manual_all",
+  "uce_open_connection_doctor_cmd",
+  "uce_refresh_tray_connection_tooltip",
+  "uce_record_heartbeat_outcome",
+  "uce_get_connection_diagnostics",
+  "uce_test_ingest_connection",
+  "uce_copy_diagnostic_report",
+]
