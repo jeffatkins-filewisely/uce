@@ -26,6 +26,11 @@ pub struct JsRuntimeDiagSnapshot {
     pub last_popup_suppressed_source: Option<String>,
     pub last_popup_suppressed_message_preview: Option<String>,
     pub last_popup_suppressed_at_unix_ms: Option<i64>,
+    /// Every native dialog attempt hits this **before** suppression / `MessageBoxW` (`native_message_box`).
+    pub last_native_popup_attempt_kind: Option<String>,
+    pub last_native_popup_attempt_source: Option<String>,
+    pub last_native_popup_attempt_message_preview: Option<String>,
+    pub last_native_popup_attempt_at_unix_ms: Option<i64>,
     /// Rust `MessageBoxW` only (`native_message_box` module).
     pub last_native_popup_kind: Option<String>,
     pub last_native_popup_source: Option<String>,
@@ -80,6 +85,15 @@ pub fn record_popup_suppressed(kind: String, source: String, message_preview: Op
         g.last_popup_suppressed_source = Some(source);
         g.last_popup_suppressed_message_preview = message_preview;
         g.last_popup_suppressed_at_unix_ms = Some(now_ms());
+    }
+}
+
+pub fn record_native_popup_attempt(kind: String, source: String, message_preview: String) {
+    if let Ok(mut g) = SNAP.lock() {
+        g.last_native_popup_attempt_kind = Some(kind);
+        g.last_native_popup_attempt_source = Some(source);
+        g.last_native_popup_attempt_message_preview = Some(message_preview);
+        g.last_native_popup_attempt_at_unix_ms = Some(now_ms());
     }
 }
 

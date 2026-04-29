@@ -1,5 +1,6 @@
 //! Global kill-switch for user-visible popups (MessageBox, toasts, alerts) — diagnostics only.
-//! Native Windows dialogs must use [`super::native_message_box::uce_show_native_message_box`] only.
+//! Native Windows dialogs must use [`super::native_message_box::uce_show_native_dialog`] /
+//! [`super::native_message_box::uce_show_native_message_box`] only.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 

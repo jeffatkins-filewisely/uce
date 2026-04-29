@@ -260,20 +260,14 @@ fn uce_dev_vite_server_reachable() -> bool {
 
 #[cfg(windows)]
 fn uce_dev_server_unreachable_message_box() {
-    const MB_OK: u32 = 0;
-    const MB_ICONWARNING: u32 = 0x30;
-    const MB_SETFOREGROUND: u32 = 0x0001_0000;
-    let title = "UCE — Dev server not running";
-    let body = "UCE could not reach the Vite dev server at http://127.0.0.1:5173.\r\n\r\n\
+    let msg = "UCE — Dev server not running\r\n\r\nUCE could not reach the Vite dev server at http://127.0.0.1:5173.\r\n\r\n\
 From the repository root run:\r\n\
   npm run tauri dev\r\n\r\n\
 Do not start only the .exe while the dev server is stopped. After Vite is running, use the tray menu “Reload UCE Interface”.";
-    services::native_message_box::uce_show_native_message_box(
+    services::native_message_box::uce_show_native_dialog(
         "dev_server_unreachable",
         "uce_dev_server_unreachable_message_box",
-        title,
-        body,
-        MB_OK | MB_ICONWARNING | MB_SETFOREGROUND,
+        msg,
     );
 }
 
@@ -830,10 +824,6 @@ fn uce_webview_finish_recovery_if_still_broken(app: AppHandle) {
 /// Windows-only: full-screen dialog so the message is never clipped by the 38×38 overlay.
 #[cfg(windows)]
 fn uce_webview_load_failed_native_message_box() {
-    const MB_OK: u32 = 0;
-    const MB_ICONWARNING: u32 = 0x30;
-    const MB_SETFOREGROUND: u32 = 0x0001_0000;
-    let title = "UCE — Could not load interface";
     let body = if cfg!(debug_assertions) {
         "The UCE window could not load the app. The WebView is showing Edge’s “can’t reach this page” screen.\r\n\r\n\
 If you are developing: from the repository root run:\r\n\
@@ -845,12 +835,11 @@ If you opened a packaged build: use Repair in Add/Remove Programs or reinstall t
 Try repairing or reinstalling UCE from your FileWisely / shop installer.\r\n\r\n\
 Developers: run `npm run tauri dev` from the repo (Vite on 127.0.0.1:5173) — do not start only the .exe without the dev server."
     };
-    services::native_message_box::uce_show_native_message_box(
+    let msg = format!("UCE — Could not load interface\r\n\r\n{}", body);
+    services::native_message_box::uce_show_native_dialog(
         "webview_load_failed",
         "uce_webview_load_failed_native_message_box",
-        title,
-        body,
-        MB_OK | MB_ICONWARNING | MB_SETFOREGROUND,
+        &msg,
     );
 }
 
@@ -1621,20 +1610,14 @@ fn focus_overlay(window: tauri::Window) -> Result<(), String> {
 #[cfg(windows)]
 fn printer_severe_native_message_box() {
     services::printer_alert_policy::record_native_printer_alert("printer_severe");
-    const MB_OK: u32 = 0;
-    const MB_ICONWARNING: u32 = 0x30;
-    const MB_SETFOREGROUND: u32 = 0x0001_0000;
-    let title = "UCE — Printer issue";
-    let body = "FileWisely Printer was not detected (exact name match).\r\n\r\n\
+    let msg = "UCE — Printer issue\r\n\r\nFileWisely Printer was not detected (exact name match).\r\n\r\n\
 UCE may try to repair automatically. If this keeps appearing, run the FileWisely installer \
 or reinstall the PDF printer.\r\n\r\n\
 Click OK to dismiss.";
-    services::native_message_box::uce_show_native_message_box(
+    services::native_message_box::uce_show_native_dialog(
         "printer_severe",
         "printer_severe_native_message_box",
-        title,
-        body,
-        MB_OK | MB_ICONWARNING | MB_SETFOREGROUND,
+        msg,
     );
 }
 

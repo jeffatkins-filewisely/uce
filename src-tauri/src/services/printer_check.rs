@@ -120,19 +120,14 @@ fn printer_repair_debug(msg: impl AsRef<str>) {
 /// Modal dialog so users always see the next step (WebView toast can be clipped at 38×38).
 #[cfg(windows)]
 fn message_box_printer_repair_uac_hint() {
-    const MB_OK: u32 = 0;
-    const MB_ICONINFORMATION: u32 = 0x40;
-    const MB_SETFOREGROUND: u32 = 0x0001_0000;
-    let title = "UCE — Install PDF printer";
-    let body = "UCE will install the FileWisely PDF printer driver.\r\n\r\n\
+    let msg = "UCE — Install PDF printer\r\n\r\nUCE will install the FileWisely PDF printer driver.\r\n\r\n\
 If Windows shows User Account Control (UAC), click YES to allow the install.\r\n\r\n\
 Click OK to continue.";
-    super::native_message_box::uce_show_native_message_box(
+    super::native_message_box::uce_show_native_dialog_flags(
         "printer_repair_uac",
         "message_box_printer_repair_uac_hint",
-        title,
-        body,
-        MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND,
+        msg,
+        super::native_message_box::UCE_MB_INFO_FOREGROUND,
     );
 }
 

@@ -1,6 +1,9 @@
-//! Single entry point for Windows `MessageBoxW` — **every** automatic native dialog must go through here.
-//! Applies `popup_suppression::suppress_all_effective()` and records Connection Doctor fields.
-//! Always writes `popup_log` + stderr **before** any `MessageBoxW` (file log survives no-console runs).
+//! Global native dialog entry — **all** Windows `MessageBoxW` usage must go through this module.
+//! Prefer [`uce_show_native_dialog`] / [`uce_show_native_dialog_flags`]; [`uce_show_native_message_box`]
+//! remains for title/body/flags call sites.
+//!
+//! For every attempt: `js_runtime_diag` **attempt** fields + `popup.log` `ATTEMPT` line **first**,
+//! then release/suppression gates, then `SHOWN` / `SUPPRESSED` / `BLOCKED` + optional `MessageBoxW`.
 //!
 //! **Release builds:** native `MessageBoxW` is **disabled entirely** (log only). Opt-in for QA:
 //! `UCE_ALLOW_NATIVE_MESSAGEBOX=1`.
@@ -9,7 +12,45 @@ use super::js_runtime_diag;
 use super::popup_log;
 use super::popup_suppression;
 
-/// Style bits: `MB_OK`, `MB_ICONWARNING`, `MB_ICONINFORMATION`, `MB_SETFOREGROUND` from `windows_sys`.
+/// Default flags: OK + warning icon + foreground.
+const MB_OK: u32 = 0;
+const MB_ICONWARNING: u32 = 0x30;
+const MB_ICONINFORMATION: u32 = 0x40;
+const MB_SETFOREGROUND: u32 = 0x0001_0000;
+
+pub const UCE_MB_WARNING_FOREGROUND: u32 = MB_OK | MB_ICONWARNING | MB_SETFOREGROUND;
+pub const UCE_MB_INFO_FOREGROUND: u32 = MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND;
+
+/// Single-string native dialog: optional title then body, separated by the first `\r\n\r\n` or `\n\n`.
+/// If there is no separator, title is `"UCE"` and the whole string is the body.
+pub fn uce_show_native_dialog(kind: &str, source: &str, message: &str) {
+    uce_show_native_dialog_flags(kind, source, message, UCE_MB_WARNING_FOREGROUND);
+}
+
+pub fn uce_show_native_dialog_flags(kind: &str, source: &str, message: &str, mb_flags: u32) {
+    let (title, body) = split_title_and_body(message);
+    uce_show_native_message_box(kind, source, title, body, mb_flags);
+}
+
+fn split_title_and_body(message: &str) -> (&str, &str) {
+    for sep in ["\r\n\r\n", "\n\n"] {
+        if let Some(idx) = message.find(sep) {
+            let title = message[..idx].trim_end();
+            let body = message[idx + sep.len()..].trim_start();
+            if !title.is_empty() {
+                return (title, body);
+            }
+        }
+    }
+    ("UCE", message)
+}
+
+fn summarize_native_dialog(title: &str, body: &str) -> String {
+    let b = body.chars().take(400).collect::<String>();
+    format!("{} | {}", title, b)
+}
+
+/// Style bits: `MB_OK`, `MB_ICONWARNING`, etc. from `windows_sys`.
 #[cfg(windows)]
 pub fn uce_show_native_message_box(
     kind: &str,
@@ -19,6 +60,7 @@ pub fn uce_show_native_message_box(
     mb_flags: u32,
 ) {
     let preview = summarize_native_dialog(title, body);
+    record_attempt(kind, source, &preview);
 
     #[cfg(not(debug_assertions))]
     {
@@ -70,6 +112,7 @@ pub fn uce_show_native_message_box(
     _mb_flags: u32,
 ) {
     let preview = summarize_native_dialog(title, body);
+    record_attempt(kind, source, &preview);
     popup_log::append(
         kind,
         source,
@@ -80,9 +123,13 @@ pub fn uce_show_native_message_box(
     );
 }
 
-fn summarize_native_dialog(title: &str, body: &str) -> String {
-    let b = body.chars().take(400).collect::<String>();
-    format!("{} | {}", title, b)
+fn record_attempt(kind: &str, source: &str, preview: &str) {
+    js_runtime_diag::record_native_popup_attempt(
+        kind.to_string(),
+        source.to_string(),
+        preview.to_string(),
+    );
+    popup_log::append(kind, source, &format!("ATTEMPT {}", preview));
 }
 
 /// Returns `true` if suppressed (caller must not show MessageBox).
