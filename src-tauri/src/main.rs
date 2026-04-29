@@ -1828,6 +1828,19 @@ fn uce_check_filewisely_printer() -> Result<PrinterCheckResult, String> {
     services::printer_check::check_filewisely_printer()
 }
 
+/// Policy for whether missing **FileWisely Printer** should block / severe-alert the UI.
+#[derive(Serialize)]
+struct UcePrinterPolicySnapshot {
+    ccc_temp_watch_only: bool,
+}
+
+#[tauri::command]
+fn uce_printer_policy_snapshot() -> UcePrinterPolicySnapshot {
+    UcePrinterPolicySnapshot {
+        ccc_temp_watch_only: print_config::ccc_temp_watch_only(),
+    }
+}
+
 /// Self-healing: re-run PDF printer silent install + rename (cooldown enforced in JS).
 /// Bundled `pdf-printer` from the MSI (`resources` in `tauri.conf.json`) is used when `C:\FileWisely\pdf-printer` is empty.
 #[tauri::command]
@@ -2102,6 +2115,7 @@ pub fn run() {
                     eprintln!("UCE_CAPTURE_PIPELINE_FAILED_TO_START phase=thread_spawn error={e}");
                     services::capture_pipeline_status::set_failed(format!("thread_spawn: {e}"));
                 }
+                services::print_watcher::spawn_ccc_temp_poll_fallback(h.clone());
                 services::office_intercept::spawn_office_winword_telemetry(h);
                 services::flight_recorder::spawn();
                 services::processed_retention::spawn();
@@ -2142,6 +2156,7 @@ pub fn run() {
             uce_open_url,
             uce_copy_into_incoming,
             uce_check_filewisely_printer,
+            uce_printer_policy_snapshot,
             uce_printer_severe_native_alert,
             repair_printer,
             uce_office_print_to_filewisely,

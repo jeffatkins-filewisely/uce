@@ -593,3 +593,92 @@ pub fn start_print_watcher(app: tauri::AppHandle) -> Result<(), String> {
 pub fn start_print_watcher(_app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
+
+/// Second line of defense when `ReadDirectoryChangesW` misses fast CCC writes under `%LOCALAPPDATA%\\Temp\\CCC`.
+#[cfg(windows)]
+pub fn spawn_ccc_temp_poll_fallback(app: tauri::AppHandle) {
+    let res = thread::Builder::new()
+        .name("uce-ccc-temp-poll".into())
+        .spawn(move || poll_ccc_temp_loop(app));
+    if let Err(e) = res {
+        eprintln!("UCE_POLL_THREAD_FAILED err={e}");
+    }
+}
+
+#[cfg(windows)]
+fn collect_ccc_poll_candidates(
+    root: &Path,
+    out: &mut Vec<PathBuf>,
+    depth: usize,
+    max_depth: usize,
+) {
+    if depth > max_depth {
+        return;
+    }
+    if !root.exists() || !root.is_dir() {
+        return;
+    }
+    let Ok(rd) = fs::read_dir(root) else {
+        return;
+    };
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            if name.eq_ignore_ascii_case(".uce_staging") {
+                continue;
+            }
+            collect_ccc_poll_candidates(&p, out, depth + 1, max_depth);
+        } else if p.is_file() {
+            if converter::path_is_under_uce_staging(&p) {
+                continue;
+            }
+            if extension_kind(&p).is_some() {
+                out.push(p);
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn poll_ccc_temp_loop(app: tauri::AppHandle) {
+    let root = print_config::ccc_temp_watch_path();
+    eprintln!(
+        "UCE_POLL_SCAN_STARTED path={} interval_secs=1 max_depth=8",
+        root.display()
+    );
+    let mut seen: HashSet<String> = HashSet::new();
+    loop {
+        thread::sleep(Duration::from_secs(1));
+        let _ = fs::create_dir_all(&root);
+        let mut candidates = Vec::new();
+        collect_ccc_poll_candidates(&root, &mut candidates, 0, 8);
+        eprintln!("UCE_POLL_SCAN_COUNT files_found={}", candidates.len());
+        for path in candidates {
+            let fp = ccc_batch::file_fingerprint(&path).unwrap_or_else(|| {
+                path.to_string_lossy().to_lowercase()
+            });
+            if seen.contains(&fp) {
+                continue;
+            }
+            seen.insert(fp.clone());
+            eprintln!(
+                "UCE_POLL_DETECTED_FILE path={} fp={}",
+                path.display(),
+                fp
+            );
+            if print_config::ccc_temp_watch_only() {
+                ccc_batch::handle_ccc_temp_file(&app, path);
+            } else {
+                handle_path(&app, path);
+            }
+        }
+        if seen.len() > 8000 {
+            seen.clear();
+            eprintln!("UCE_POLL_SEEN_PRUNED reason=max_entries");
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn spawn_ccc_temp_poll_fallback(_app: tauri::AppHandle) {}

@@ -44,7 +44,7 @@ fn wait_for_pdf_file_stable(path: &Path) -> bool {
 }
 
 /// Dedupe key for CCC temp: full path + size + mtime (nanos). Basename-only + millis collided on rapid prints.
-fn file_fingerprint(path: &Path) -> Option<String> {
+pub(crate) fn file_fingerprint(path: &Path) -> Option<String> {
     let m = fs::metadata(path).ok()?;
     let path_key = fs::canonicalize(path)
         .map(|p| p.to_string_lossy().to_lowercase())

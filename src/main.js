@@ -548,6 +548,15 @@ function isUceSuppressPrinterSevereModal() {
   }
 }
 
+/** Opt-in: `localStorage uce_printer_required=1` — missing FileWisely Printer is blocking / severe. Default is optional. */
+function isUcePrinterRequiredExplicit() {
+  try {
+    return localStorage.getItem("uce_printer_required") === "1";
+  } catch {
+    return false;
+  }
+}
+
 /** Hide the red “needs attention” banner above the dock; health strip dot may still warn. */
 function isUceSuppressBlockingHealthBanner() {
   try {
@@ -3322,6 +3331,38 @@ let healthPrinterExact = false;
 /** First time printer missing / core unhealthy (for sustained alerts). */
 let printerMissingSince = null;
 let coreUnhealthySince = null;
+/** From `uce_printer_policy_snapshot` — refreshed on a TTL in `refreshPrinterPolicyCache`. */
+let ucePrinterPolicyCache = { ccc_temp_watch_only: false, loadedAt: 0 };
+const PRINTER_POLICY_CACHE_MS = 30_000;
+/** Severe printer modal / native alert — avoid spam if health keeps polling. */
+const PRINTER_SEVERE_MODAL_DEBOUNCE_MS = 15 * 60 * 1000;
+let lastPrinterSevereModalShownAt = 0;
+
+async function refreshPrinterPolicyCache() {
+  const now = Date.now();
+  if (
+    ucePrinterPolicyCache.loadedAt > 0 &&
+    now - ucePrinterPolicyCache.loadedAt < PRINTER_POLICY_CACHE_MS
+  ) {
+    return;
+  }
+  try {
+    const s = await invoke("uce_printer_policy_snapshot");
+    ucePrinterPolicyCache = {
+      ccc_temp_watch_only: !!s?.ccc_temp_watch_only,
+      loadedAt: Date.now(),
+    };
+  } catch (_) {
+    ucePrinterPolicyCache = { ...ucePrinterPolicyCache, loadedAt: Date.now() };
+  }
+}
+
+/** Missing printer is warn-only unless print queue is required and shop is not CCC-temp-only. */
+function isUceMissingPrinterNonCritical() {
+  return (
+    !isUcePrinterRequiredExplicit() || ucePrinterPolicyCache.ccc_temp_watch_only
+  );
+}
 /** Dedupe health toasts — same detail string does not repeat until healthy or detail changes. */
 let lastHealthAttentionToastSignature = "";
 let lastEdgePrinterMissing = false;
@@ -6541,9 +6582,9 @@ function hideBlockingBanner() {
 }
 
 /** One toast when a problem persists (~25s). No persistent strip over the editor. */
-function maybeHealthAttentionToast(printerOk, uploadsOk, attentionDetail) {
+function maybeHealthAttentionToast(effectivePrinterOk, uploadsOk, attentionDetail) {
   if (isUceSuppressBlockingHealthBanner()) return;
-  if (printerOk && uploadsOk) {
+  if (effectivePrinterOk && uploadsOk) {
     lastHealthAttentionToastSignature = "";
     return;
   }
@@ -6577,8 +6618,13 @@ async function hidePrinterSevereModal(fromHealthyRecovery = false) {
 async function showPrinterSevereModal() {
   if (!ucePrinterSevereModal || printerModalDismissedUntilOk) return;
   if (isUceSuppressPrinterSevereModal()) return;
+  if (isUceMissingPrinterNonCritical()) return;
   if (appEl.classList.contains("uce-tenant-setup-open")) return;
+  if (Date.now() - lastPrinterSevereModalShownAt < PRINTER_SEVERE_MODAL_DEBOUNCE_MS) {
+    return;
+  }
   const firstOpen = ucePrinterSevereModal.hidden;
+  lastPrinterSevereModalShownAt = Date.now();
   /* Windows: native MessageBox only. Never show the HTML modal — any invoke failure still must not
      paint the webview (clips to “…the FileWisely…”). Non-Windows: in-app modal below. */
   if (isWindowsUceClient()) {
@@ -6641,10 +6687,16 @@ async function showPrinterSevereModal() {
 function syncHardFailureUi(printerOk, uploadsOk) {
   if (appEl.classList.contains("uce-tenant-setup-open")) return;
   const now = Date.now();
-  const coreUnhealthy = !printerOk || !uploadsOk;
+  const missingPrinterIsNonCritical = isUceMissingPrinterNonCritical();
+  const effectivePrinterOk = printerOk || missingPrinterIsNonCritical;
+  const coreUnhealthy = !effectivePrinterOk || !uploadsOk;
 
   if (!printerOk) {
-    if (printerMissingSince === null) printerMissingSince = now;
+    if (missingPrinterIsNonCritical) {
+      printerMissingSince = null;
+    } else if (printerMissingSince === null) {
+      printerMissingSince = now;
+    }
   } else {
     printerMissingSince = null;
     printerModalDismissedUntilOk = false;
@@ -6662,6 +6714,7 @@ function syncHardFailureUi(printerOk, uploadsOk) {
 
   if (
     printerOk ||
+    missingPrinterIsNonCritical ||
     printerMissingSince === null ||
     now - printerMissingSince < HEALTH_HARD_ALERT_MS
   ) {
@@ -6726,12 +6779,25 @@ function pdfPipelineStale() {
 }
 
 /** Short copy for the red banner so users see what failed (not just “needs attention”). */
-function buildBlockingBannerDetail(printerOk, uploadsOk, up, stale) {
+function buildBlockingBannerDetail(
+  printerOk,
+  uploadsOk,
+  up,
+  stale,
+  missingPrinterIsNonCritical
+) {
   if (printerOk && uploadsOk) {
     return "All checks passed";
   }
+  if (!printerOk && missingPrinterIsNonCritical && uploadsOk) {
+    return "FileWisely Printer not installed (optional for your capture mode) — set localStorage uce_printer_required=1 if you rely on the print queue";
+  }
   const bits = [];
-  if (!printerOk) {
+  if (!printerOk && missingPrinterIsNonCritical) {
+    bits.push(
+      "FileWisely Printer not installed (optional) — set uce_printer_required=1 to require the queue"
+    );
+  } else if (!printerOk) {
     bits.push(
       'No queue named "FileWisely Printer" — rename in Windows Printers (must match exactly, two words)'
     );
@@ -6781,6 +6847,7 @@ async function updateUceHealthStrip() {
     void setCompactWindowSize();
     return;
   }
+  await refreshPrinterPolicyCache();
   if (Date.now() - lastPrinterHealthFetch > 15_000) {
     await refreshPrinterHealthFromBackend();
   }
@@ -6788,6 +6855,8 @@ async function updateUceHealthStrip() {
   const stale = pdfPipelineStale();
   const uploadsOk = up.ok && !stale;
   const printerOk = healthPrinterExact;
+  const missingNc = isUceMissingPrinterNonCritical();
+  const effectivePrinterOk = printerOk || missingNc;
 
   if (!printerOk && !lastEdgePrinterMissing) {
     logEvent("printer_missing", "FileWisely Printer not found");
@@ -6796,25 +6865,36 @@ async function updateUceHealthStrip() {
 
   const printerLine = printerOk
     ? "Printer: OK (FileWisely Printer)"
-    : "Printer: missing — repair runs on cooldown";
+    : missingNc
+      ? "Printer: not installed (optional — set uce_printer_required=1 to treat as required)"
+      : "Printer: missing — repair runs on cooldown";
   const uploadLine = stale
     ? "Uploads (PDF): delayed — no recent auto-send (check folder / context)"
     : `Uploads: ${up.label}`;
   const uceLine = "UCE: running";
   const captureHint =
     "Non-CCC: save or print to a PDF in Documents or Downloads to capture (when general watch is on).";
-  const bannerDetail = buildBlockingBannerDetail(printerOk, uploadsOk, up, stale);
+  const bannerDetail = buildBlockingBannerDetail(
+    printerOk,
+    uploadsOk,
+    up,
+    stale,
+    missingNc
+  );
   uceHealthStrip.title = `${printerLine}\n${uceLine}\n${uploadLine}\n${captureHint}`;
+  const ariaHealthyCore = effectivePrinterOk && uploadsOk;
   uceHealthStrip.setAttribute(
     "aria-label",
-    printerOk && uploadsOk
-      ? "System healthy"
+    ariaHealthyCore
+      ? printerOk
+        ? "System healthy"
+        : "System OK — FileWisely Printer not installed (optional for this mode)"
       : `Needs attention: ${bannerDetail} — hover the status dot for lines`
   );
   uceHealthStrip.classList.remove("uce-health--warn", "uce-health--bad");
-  if (!printerOk) {
+  if (!printerOk && !missingNc) {
     uceHealthStrip.classList.add("uce-health--bad");
-  } else if (!uploadsOk) {
+  } else if (!uploadsOk || (!printerOk && missingNc)) {
     uceHealthStrip.classList.add("uce-health--warn");
   }
 
@@ -6828,7 +6908,7 @@ async function updateUceHealthStrip() {
   }
 
   syncHardFailureUi(printerOk, uploadsOk);
-  maybeHealthAttentionToast(printerOk, uploadsOk, bannerDetail);
+  maybeHealthAttentionToast(effectivePrinterOk, uploadsOk, bannerDetail);
   if (isUceSuppressBlockingHealthBanner()) {
     hideBlockingBanner();
   }
@@ -6858,7 +6938,12 @@ async function prepareWindowForPrinterRepairUi() {
 async function selfHealPrinter(fromStartup = false) {
   try {
     await refreshPrinterHealthFromBackend();
+    await refreshPrinterPolicyCache();
     if (healthPrinterExact) {
+      await updateUceHealthStrip();
+      return;
+    }
+    if (isUceMissingPrinterNonCritical()) {
       await updateUceHealthStrip();
       return;
     }
@@ -6959,6 +7044,7 @@ async function uceRuntimePrinterCheck() {
 }
 
 (async function bootstrapUce() {
+  void refreshPrinterPolicyCache();
   /* Schedule first — never block on uce_check (spooler/PowerShell can stall) or tenant dialog. */
   setTimeout(
     () => void selfHealPrinter(true),
@@ -7174,6 +7260,7 @@ window.__uceExtractRoFromTitle = extractRoFromTitleForMonitor;
 window.__uceIsCccWorkflowWindow = isCccWorkflowWindow;
 window.__uceResolveRoForAwareness = resolveRoForAwareness;
 window.__uceHealthStrip = updateUceHealthStrip;
+window.__uceRefreshPrinterPolicy = refreshPrinterPolicyCache;
 window.__uceSelfHealPrinter = selfHealPrinter;
 window.__uceGetEventLog = getUceEventLog;
 window.__uceLogEvent = logEvent;

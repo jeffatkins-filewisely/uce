@@ -1,4 +1,8 @@
 [[permission]]
 identifier = "allow-uce-printer-commands"
 description = "Printer health check and Bullzip repair invoked from the UCE frontend (Tauri ACL)."
-commands.allow = ["repair_printer", "uce_check_filewisely_printer"]
+commands.allow = [
+    "repair_printer",
+    "uce_check_filewisely_printer",
+    "uce_printer_policy_snapshot",
+]

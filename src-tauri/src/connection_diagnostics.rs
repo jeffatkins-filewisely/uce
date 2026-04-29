@@ -238,9 +238,10 @@ fn capture_pipeline_snapshot(app: &AppHandle) -> serde_json::Value {
         "last_20_ccc_files_seen": last_20_ccc,
         "trace_hints": [
             "Connection OK but no captures: confirm PDFs land under a watched folder — CCC Temp\\\\CCC, FileWisely Incoming, or (if enabled) Documents/Downloads.",
+            "CCC temp: OS watcher can miss fast writes — 1s polling backup logs UCE_POLL_SCAN_* / UCE_POLL_DETECTED_FILE.",
             "Trace capture: stderr lines UCE_WATCH_ATTACHED / UCE_FILE_DETECTED_RAW / UCE_PIPELINE_CONTEXT / UCE_FILE_REJECTED — run UCE from Command Prompt.",
             "Search stderr for UCE_GENERAL_FILE_* / UCE_CCC_* — run UCE from Command Prompt to see lines.",
-            "Printer popup: FileWisely Printer missing — install/rename printer, or set localStorage uce_suppress_printer_severe_modal=1 (dev only).",
+            "Printer: missing FileWisely Printer is warn-only unless localStorage uce_printer_required=1 (and not UCE_CCC_TEMP_WATCH_ONLY). Suppress: uce_suppress_printer_severe_modal=1.",
             "Toast every ~25s: health attention — expand Connection Doctor status (capture_pipeline) for printer/upload stale.",
             "WebView 'Could not load': classification chrome_error_page in diagnostics — start Vite (dev) or reinstall (prod)."
         ],
