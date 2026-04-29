@@ -42,7 +42,8 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{TrayIconBuilder, TrayIconId};
 use tauri::webview::{PageLoadEvent, WebviewWindowBuilder};
 use tauri::WebviewUrl;
-use tauri::{AppHandle, Emitter, Manager, Url};
+use tauri::plugin::TauriPlugin;
+use tauri::{AppHandle, Emitter, Manager, Url, Wry};
 use tokio::time::sleep;
 use types::{RecentMemory, Rule, WatchContext};
 
@@ -2000,6 +2001,39 @@ fn uce_ensure_startup_shortcut() -> Result<String, String> {
     services::startup_shortcut::ensure_filewisely_uce_shortcut()
 }
 
+/// WebView2 hardening: suppress default **script** dialogs (`alert` / `confirm` / `prompt`) via early
+/// injection, and **cancel** navigation to Edge interstitial error URLs (`chrome-error:`) on the main
+/// webview — recovery uses existing `uce_run_chrome_error_recovery_or_alert` (silent reload / resize).
+/// Does not replace in-process HTML error pages when the URL stays on `http://127.0.0.1` without a
+/// `chrome-error` navigation (see startup health + recovery).
+fn uce_webview_hardening_plugin() -> TauriPlugin<Wry> {
+    tauri::plugin::Builder::new("uce-webview-hardening")
+        .js_init_script(
+            r#"(function(){try{
+Object.defineProperty(window,'alert',{value:function(m){try{console.warn('[UCE] alert suppressed',m);}catch(_e){}},writable:true,configurable:true});
+Object.defineProperty(window,'confirm',{value:function(m){try{console.warn('[UCE] confirm suppressed',m);}catch(_e){}return false;},writable:true,configurable:true});
+Object.defineProperty(window,'prompt',{value:function(m,d){try{console.warn('[UCE] prompt suppressed',m);}catch(_e){}return null;},writable:true,configurable:true});
+}catch(_e){}})();"#,
+        )
+        .on_navigation(|webview, url| {
+            let s = url.as_str();
+            if webview.label() == "main" && uce_url_looks_like_chrome_interstitial_error(s) {
+                eprintln!(
+                    "UCE_WEBVIEW_NAV_BLOCKED kind=chrome_error_interstitial url={}",
+                    s
+                );
+                let app = webview.app_handle().clone();
+                let _ = webview.run_on_main_thread(move || {
+                    uce_webview_clear_stable_mode();
+                    uce_run_chrome_error_recovery_or_alert(app);
+                });
+                return false;
+            }
+            true
+        })
+        .build()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let global_shortcut_plugin = tauri_plugin_global_shortcut::Builder::new()
@@ -2032,7 +2066,7 @@ pub fn run() {
         })
         .build();
 
-    let mut builder = tauri::Builder::default();
+    let mut builder = tauri::Builder::default().plugin(uce_webview_hardening_plugin());
 
     #[cfg(windows)]
     {
