@@ -23,6 +23,11 @@ pub fn is_fw_incoming_pdf_path(path: &str) -> bool {
 }
 
 pub fn emit_uce_incoming_pdf(app: &tauri::AppHandle, path_str: String) {
+    eprintln!(
+        "UCE_RUST_EMIT_INCOMING path={} event=uce-incoming-file kind=pdf fw_named={}",
+        path_str,
+        is_fw_incoming_pdf_path(&path_str)
+    );
     let trace = is_fw_incoming_pdf_path(&path_str);
     if trace {
         let exists = Path::new(&path_str).is_file();

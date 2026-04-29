@@ -514,6 +514,13 @@ fn handle_ccc_temp_file_inner(app: &tauri::AppHandle, path: PathBuf, source_tag:
 
     let initial_size = meta.len();
     eprintln!(
+        "UCE_PIPELINE_CONTEXT path={} mode=ccc_temp ext={} bytes={} source={}",
+        path.display(),
+        ext,
+        initial_size,
+        source_tag
+    );
+    eprintln!(
         "[UCE][ccc] lifecycle detected_in_watched_folder path={} ext={} initial_size={} source={}",
         path.display(),
         ext,
@@ -579,6 +586,14 @@ fn handle_ccc_temp_file_inner(app: &tauri::AppHandle, path: PathBuf, source_tag:
         note_miss_reason("duplicate_suppressed");
         return;
     }
+
+    eprintln!(
+        "UCE_FILE_ACCEPTED path={} ext={} bytes={} source={}",
+        path.display(),
+        ext,
+        initial_size,
+        source_tag
+    );
 
     let basename = basename_key(&path);
     let out_dir = path

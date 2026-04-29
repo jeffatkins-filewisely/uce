@@ -288,6 +288,7 @@ async function uploadFwPdfCore(rawPath, meta, source) {
       /* optional command */
     }
     console.info(`[UCE] trace js_upload_started path=${rawPath}`);
+    console.info(`UCE_UPLOAD_STARTED path=${rawPath}`);
     const capture = await invoke("read_pdf_file", { path: rawPath });
     pipelinePath = capture.file_path || rawPath;
     if (fwKeyPath(pipelinePath) !== fwKeyPath(rawPath)) {
@@ -319,6 +320,7 @@ async function uploadFwPdfCore(rawPath, meta, source) {
       uploadedPdfFingerprints.add(fp);
       st.uploadFinished = true;
       st.uploadFailed = false;
+      console.info(`UCE_UPLOAD_SUCCESS path=${pipelinePath}`);
       emitUceContextCapturedIfRelevant({
         source: "auto_pdf_incoming",
         fileHint: pipelinePath.split(/[\\/]/).pop() || null,
@@ -332,6 +334,9 @@ async function uploadFwPdfCore(rawPath, meta, source) {
     } else {
       st.uploadFinished = true;
       st.uploadFailed = false;
+      console.info(
+        `UCE_UPLOAD_SKIPPED path=${pipelinePath} reason=${uploadResult?.message || "no_endpoint_or_local_only"}`
+      );
       await invoke("uce_move_fw_pdf_outcome", {
         sourcePath: pipelinePath,
         outcome: "failed",
@@ -416,6 +421,9 @@ async function uploadFwPdfCore(rawPath, meta, source) {
         `[UCE] OFFICE_PIPELINE_RESULT path=${pipelinePath} result=failed`
       );
     }
+    console.error(
+      `UCE_UPLOAD_FAILED path=${pipelinePath} message=${typeof oneErr === "string" ? oneErr : oneErr?.message || String(oneErr)}`
+    );
     console.info(`[UCE] trace js_upload_failed path=${pipelinePath}`);
     const pdfName = pipelinePath.split(/[\\/]/).pop() || "file.pdf";
     console.error(`[UCE] Upload failed: ${pdfName}`, oneErr);
@@ -6619,6 +6627,9 @@ async function showPrinterSevereModal() {
   if (!ucePrinterSevereModal || printerModalDismissedUntilOk) return;
   if (isUceSuppressPrinterSevereModal()) return;
   if (isUceMissingPrinterNonCritical()) return;
+  console.warn(
+    "UCE_UI_CLIENT kind=printer_severe_modal (Windows: invoke uce_printer_severe_native_alert → native MessageBox)"
+  );
   if (appEl.classList.contains("uce-tenant-setup-open")) return;
   if (Date.now() - lastPrinterSevereModalShownAt < PRINTER_SEVERE_MODAL_DEBOUNCE_MS) {
     return;

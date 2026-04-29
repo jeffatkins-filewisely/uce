@@ -260,6 +260,7 @@ fn uce_dev_vite_server_reachable() -> bool {
 
 #[cfg(windows)]
 fn uce_dev_server_unreachable_message_box() {
+    eprintln!("UCE_UI_NATIVE_ALERT kind=dev_server_unreachable title=\"UCE — Dev server not running\"");
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW;
@@ -841,6 +842,7 @@ fn uce_webview_finish_recovery_if_still_broken(app: AppHandle) {
 /// Windows-only: full-screen dialog so the message is never clipped by the 38×38 overlay.
 #[cfg(windows)]
 fn uce_webview_load_failed_native_message_box() {
+    eprintln!("UCE_UI_NATIVE_ALERT kind=webview_load_failed title=\"UCE — Could not load interface\"");
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW;
@@ -1586,6 +1588,7 @@ fn focus_overlay(window: tauri::Window) -> Result<(), String> {
 /// Windows-only: real `MessageBox` so the alert is never clipped by the tiny overlay WebView (38×38).
 #[cfg(windows)]
 fn printer_severe_native_message_box() {
+    eprintln!("UCE_UI_NATIVE_ALERT kind=printer_severe title=\"UCE — Printer issue\"");
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW;
@@ -1618,6 +1621,15 @@ Click OK to dismiss.";
 async fn uce_printer_severe_native_alert() -> Result<(), String> {
     #[cfg(windows)]
     {
+        if std::env::var("UCE_SUPPRESS_PRINTER_NATIVE_ALERT")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+        {
+            eprintln!(
+                "UCE_UI_NATIVE_ALERT skipped kind=printer_severe reason=UCE_SUPPRESS_PRINTER_NATIVE_ALERT"
+            );
+            return Ok(());
+        }
         tokio::task::spawn_blocking(|| {
             printer_severe_native_message_box();
         })

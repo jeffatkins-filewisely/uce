@@ -220,6 +220,7 @@ fn is_pdf(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+#[derive(Debug)]
 enum ClaimKind {
     Office,
     Pdf,
@@ -450,6 +451,14 @@ fn claim_file_to_staging(
 ) -> Result<PathBuf, String> {
     kind.validate(original)?;
 
+    eprintln!(
+        "UCE_FILE_COPY_ATTEMPT path={} stem={} claim_tag={} kind={:?}",
+        original.display(),
+        stem,
+        claim_tag,
+        kind
+    );
+
     let (interval_ms, max_attempts) = if print_config::ccc_temp_watch_only() {
         (150u64, 34usize)
     } else {
@@ -501,6 +510,7 @@ fn claim_file_to_staging(
                         dest.display()
                     );
                 }
+                eprintln!("UCE_FILE_COPY_SUCCESS staged_path={}", dest.display());
                 if print_config::ccc_temp_watch_only() {
                     let staging_move_unix_ms = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
@@ -565,6 +575,12 @@ fn claim_file_to_staging(
             last_err.as_deref().unwrap_or("unknown")
         );
     }
+
+    eprintln!(
+        "UCE_FILE_COPY_FAILED path={} last_err={}",
+        original.display(),
+        last_err.as_deref().unwrap_or("unknown")
+    );
 
     Err(format!(
         "Could not claim {} after {} attempts (last: {})",

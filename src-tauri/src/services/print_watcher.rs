@@ -339,6 +339,11 @@ fn handle_path(app: &tauri::AppHandle, path: std::path::PathBuf) {
             }
             eprintln!("[UCE] File stable: {}", path.display());
             let path_str = path.to_string_lossy().to_string();
+            eprintln!(
+                "UCE_FILE_ACCEPTED path={} kind=pdf matched_rule={}",
+                path.display(),
+                matched_rule
+            );
             log_general_pdf_captured_if_needed(matched_rule, &path_str);
             incoming_emit::emit_uce_incoming_pdf(app, path_str);
         }
