@@ -26,6 +26,15 @@ pub struct JsRuntimeDiagSnapshot {
     pub last_popup_suppressed_source: Option<String>,
     pub last_popup_suppressed_message_preview: Option<String>,
     pub last_popup_suppressed_at_unix_ms: Option<i64>,
+    /// Rust `MessageBoxW` only (`native_message_box` module).
+    pub last_native_popup_kind: Option<String>,
+    pub last_native_popup_source: Option<String>,
+    pub last_native_popup_message_preview: Option<String>,
+    pub last_native_popup_at_unix_ms: Option<i64>,
+    pub last_native_popup_suppressed_kind: Option<String>,
+    pub last_native_popup_suppressed_source: Option<String>,
+    pub last_native_popup_suppressed_message_preview: Option<String>,
+    pub last_native_popup_suppressed_at_unix_ms: Option<i64>,
 }
 
 static SNAP: LazyLock<Mutex<JsRuntimeDiagSnapshot>> =
@@ -71,5 +80,23 @@ pub fn record_popup_suppressed(kind: String, source: String, message_preview: Op
         g.last_popup_suppressed_source = Some(source);
         g.last_popup_suppressed_message_preview = message_preview;
         g.last_popup_suppressed_at_unix_ms = Some(now_ms());
+    }
+}
+
+pub fn record_native_popup_shown(kind: String, source: String, message_preview: String) {
+    if let Ok(mut g) = SNAP.lock() {
+        g.last_native_popup_kind = Some(kind);
+        g.last_native_popup_source = Some(source);
+        g.last_native_popup_message_preview = Some(message_preview);
+        g.last_native_popup_at_unix_ms = Some(now_ms());
+    }
+}
+
+pub fn record_native_popup_suppressed(kind: String, source: String, message_preview: String) {
+    if let Ok(mut g) = SNAP.lock() {
+        g.last_native_popup_suppressed_kind = Some(kind);
+        g.last_native_popup_suppressed_source = Some(source);
+        g.last_native_popup_suppressed_message_preview = Some(message_preview);
+        g.last_native_popup_suppressed_at_unix_ms = Some(now_ms());
     }
 }

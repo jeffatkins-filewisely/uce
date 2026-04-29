@@ -9,6 +9,7 @@ pub mod office_intercept;
 pub mod office_printer_route;
 pub mod js_runtime_diag;
 pub mod popup_suppression;
+pub mod native_message_box;
 pub mod incoming_emit;
 pub mod incoming_unique_rename;
 pub mod foreground_telemetry;

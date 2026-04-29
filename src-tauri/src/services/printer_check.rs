@@ -120,39 +120,20 @@ fn printer_repair_debug(msg: impl AsRef<str>) {
 /// Modal dialog so users always see the next step (WebView toast can be clipped at 38×38).
 #[cfg(windows)]
 fn message_box_printer_repair_uac_hint() {
-    if super::popup_suppression::guard_native_message_box(
-        "native_message_box",
-        "printer_repair_uac",
-        "Install PDF printer (UAC hint)",
-    ) {
-        return;
-    }
-    eprintln!("UCE_UI_NATIVE_ALERT kind=printer_repair_uac title=\"UCE — Install PDF printer\"");
-    use std::ffi::OsStr;
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW;
     const MB_OK: u32 = 0;
     const MB_ICONINFORMATION: u32 = 0x40;
     const MB_SETFOREGROUND: u32 = 0x0001_0000;
-    let title: Vec<u16> = OsStr::new("UCE — Install PDF printer")
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
+    let title = "UCE — Install PDF printer";
     let body = "UCE will install the FileWisely PDF printer driver.\r\n\r\n\
 If Windows shows User Account Control (UAC), click YES to allow the install.\r\n\r\n\
 Click OK to continue.";
-    let text: Vec<u16> = OsStr::new(body)
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-    unsafe {
-        MessageBoxW(
-            std::ptr::null_mut(),
-            text.as_ptr(),
-            title.as_ptr(),
-            MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND,
-        );
-    }
+    super::native_message_box::uce_show_native_message_box(
+        "printer_repair_uac",
+        "message_box_printer_repair_uac_hint",
+        title,
+        body,
+        MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND,
+    );
 }
 
 /// Run Bullzip/Inno setup **elevated**. Printer drivers require admin; spawning `setup.exe` from a normal

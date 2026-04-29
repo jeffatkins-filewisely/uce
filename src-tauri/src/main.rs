@@ -260,40 +260,21 @@ fn uce_dev_vite_server_reachable() -> bool {
 
 #[cfg(windows)]
 fn uce_dev_server_unreachable_message_box() {
-    if services::popup_suppression::guard_native_message_box(
-        "native_message_box",
-        "uce_dev_server_unreachable",
-        "Dev server not running",
-    ) {
-        return;
-    }
-    eprintln!("UCE_UI_NATIVE_ALERT kind=dev_server_unreachable title=\"UCE — Dev server not running\"");
-    use std::ffi::OsStr;
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW;
     const MB_OK: u32 = 0;
     const MB_ICONWARNING: u32 = 0x30;
     const MB_SETFOREGROUND: u32 = 0x0001_0000;
-    let title: Vec<u16> = OsStr::new("UCE — Dev server not running")
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
+    let title = "UCE — Dev server not running";
     let body = "UCE could not reach the Vite dev server at http://127.0.0.1:5173.\r\n\r\n\
 From the repository root run:\r\n\
   npm run tauri dev\r\n\r\n\
 Do not start only the .exe while the dev server is stopped. After Vite is running, use the tray menu “Reload UCE Interface”.";
-    let text: Vec<u16> = OsStr::new(body)
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-    unsafe {
-        MessageBoxW(
-            std::ptr::null_mut(),
-            text.as_ptr(),
-            title.as_ptr(),
-            MB_OK | MB_ICONWARNING | MB_SETFOREGROUND,
-        );
-    }
+    services::native_message_box::uce_show_native_message_box(
+        "dev_server_unreachable",
+        "uce_dev_server_unreachable_message_box",
+        title,
+        body,
+        MB_OK | MB_ICONWARNING | MB_SETFOREGROUND,
+    );
 }
 
 /// In dev, `reload()` while the document is still `about:blank` only reloads blank — it does not open Vite.
@@ -849,24 +830,10 @@ fn uce_webview_finish_recovery_if_still_broken(app: AppHandle) {
 /// Windows-only: full-screen dialog so the message is never clipped by the 38×38 overlay.
 #[cfg(windows)]
 fn uce_webview_load_failed_native_message_box() {
-    if services::popup_suppression::guard_native_message_box(
-        "native_message_box",
-        "uce_webview_load_failed",
-        "Could not load interface",
-    ) {
-        return;
-    }
-    eprintln!("UCE_UI_NATIVE_ALERT kind=webview_load_failed title=\"UCE — Could not load interface\"");
-    use std::ffi::OsStr;
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW;
     const MB_OK: u32 = 0;
     const MB_ICONWARNING: u32 = 0x30;
     const MB_SETFOREGROUND: u32 = 0x0001_0000;
-    let title: Vec<u16> = OsStr::new("UCE — Could not load interface")
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
+    let title = "UCE — Could not load interface";
     let body = if cfg!(debug_assertions) {
         "The UCE window could not load the app. The WebView is showing Edge’s “can’t reach this page” screen.\r\n\r\n\
 If you are developing: from the repository root run:\r\n\
@@ -878,18 +845,13 @@ If you opened a packaged build: use Repair in Add/Remove Programs or reinstall t
 Try repairing or reinstalling UCE from your FileWisely / shop installer.\r\n\r\n\
 Developers: run `npm run tauri dev` from the repo (Vite on 127.0.0.1:5173) — do not start only the .exe without the dev server."
     };
-    let text: Vec<u16> = OsStr::new(body)
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-    unsafe {
-        MessageBoxW(
-            std::ptr::null_mut(),
-            text.as_ptr(),
-            title.as_ptr(),
-            MB_OK | MB_ICONWARNING | MB_SETFOREGROUND,
-        );
-    }
+    services::native_message_box::uce_show_native_message_box(
+        "webview_load_failed",
+        "uce_webview_load_failed_native_message_box",
+        title,
+        body,
+        MB_OK | MB_ICONWARNING | MB_SETFOREGROUND,
+    );
 }
 
 #[tauri::command]
@@ -1659,46 +1621,27 @@ fn focus_overlay(window: tauri::Window) -> Result<(), String> {
 #[cfg(windows)]
 fn printer_severe_native_message_box() {
     services::printer_alert_policy::record_native_printer_alert("printer_severe");
-    eprintln!("UCE_UI_NATIVE_ALERT kind=printer_severe title=\"UCE — Printer issue\"");
-    use std::ffi::OsStr;
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW;
     const MB_OK: u32 = 0;
     const MB_ICONWARNING: u32 = 0x30;
     const MB_SETFOREGROUND: u32 = 0x0001_0000;
-    let title: Vec<u16> = OsStr::new("UCE — Printer issue")
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
+    let title = "UCE — Printer issue";
     let body = "FileWisely Printer was not detected (exact name match).\r\n\r\n\
 UCE may try to repair automatically. If this keeps appearing, run the FileWisely installer \
 or reinstall the PDF printer.\r\n\r\n\
 Click OK to dismiss.";
-    let text: Vec<u16> = OsStr::new(body)
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-    unsafe {
-        MessageBoxW(
-            std::ptr::null_mut(),
-            text.as_ptr(),
-            title.as_ptr(),
-            MB_OK | MB_ICONWARNING | MB_SETFOREGROUND,
-        );
-    }
+    services::native_message_box::uce_show_native_message_box(
+        "printer_severe",
+        "printer_severe_native_message_box",
+        title,
+        body,
+        MB_OK | MB_ICONWARNING | MB_SETFOREGROUND,
+    );
 }
 
 #[tauri::command]
 async fn uce_printer_severe_native_alert() -> Result<(), String> {
     #[cfg(windows)]
     {
-        if services::popup_suppression::guard_native_message_box(
-            "native_message_box",
-            "uce_printer_severe_native_alert",
-            "Printer severe (invoke)",
-        ) {
-            return Ok(());
-        }
         if std::env::var("UCE_SUPPRESS_PRINTER_NATIVE_ALERT")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false)

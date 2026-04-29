@@ -251,7 +251,7 @@ fn capture_pipeline_snapshot(app: &AppHandle) -> serde_json::Value {
             "JS console: UCE_UPLOAD_STARTED / UCE_UPLOAD_SUCCESS|SKIPPED|FAILED, UCE_UI_CLIENT kind=printer_severe_modal — DevTools when WebView is up.",
             "Search stderr for UCE_GENERAL_FILE_* / UCE_CCC_* — run UCE from Command Prompt to see lines.",
             "Printer: default warning-only — no MessageBox unless UCE_PRINTER_REQUIRED=1 or localStorage uce_printer_required=1 (sync via uce_sync_printer_ui_policy). CCC temp + watcher running forces warning_only. See capture_pipeline.printer_alert and stderr UCE_PRINTER_WARNING_ONLY.",
-            "Global popup mute: capture_pipeline.js_runtime.suppress_all_popups, UCE_SUPPRESS_ALL_POPUPS=0|1, localStorage uce_suppress_all_popups=0|1, last_popup_suppressed_* in diagnostics.",
+            "Global popup mute: capture_pipeline.js_runtime.suppress_all_popups, UCE_SUPPRESS_ALL_POPUPS=0|1, localStorage uce_suppress_all_popups=0|1, last_popup_suppressed_* (JS) + last_native_popup_* / last_native_popup_suppressed_* (Rust MessageBoxW via native_message_box only). UCE_ALLOW_NATIVE_MESSAGEBOX=1 bypasses suppression for native dialogs.",
             "Toast every ~25s: health attention — expand Connection Doctor status (capture_pipeline) for printer/upload stale.",
             "WebView 'Could not load': classification chrome_error_page in diagnostics — start Vite (dev) or reinstall (prod)."
         ],

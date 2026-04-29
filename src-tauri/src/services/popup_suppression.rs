@@ -1,8 +1,7 @@
 //! Global kill-switch for user-visible popups (MessageBox, toasts, alerts) — diagnostics only.
+//! Native Windows dialogs must use [`super::native_message_box::uce_show_native_message_box`] only.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-
-use super::js_runtime_diag;
 
 static SUPPRESS_ALL: AtomicBool = AtomicBool::new(false);
 
@@ -30,21 +29,4 @@ pub fn suppress_all_effective() -> bool {
         Err(_) => {}
     }
     SUPPRESS_ALL.load(Ordering::SeqCst)
-}
-
-/// Returns `true` if the native dialog must **not** be shown.
-pub fn guard_native_message_box(kind: &str, source: &str, message_hint: &str) -> bool {
-    if !suppress_all_effective() {
-        return false;
-    }
-    eprintln!(
-        "UCE_UI_POPUP_SUPPRESSED kind={} source={} message={}",
-        kind, source, message_hint
-    );
-    js_runtime_diag::record_popup_suppressed(
-        kind.to_string(),
-        source.to_string(),
-        Some(message_hint.to_string()),
-    );
-    true
 }
