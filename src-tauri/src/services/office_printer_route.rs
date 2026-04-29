@@ -157,8 +157,6 @@ fn ps_escape_single_quoted(s: &str) -> String {
 /// Print `.doc` / `.docx` / `.rtf` using Word.Application to **FileWisely Printer** (headless Word, no dialog).
 #[cfg(windows)]
 pub fn try_print_office_to_filewisely(path: &Path) -> Result<(), String> {
-    use std::os::windows::process::CommandExt;
-
     if !path.is_file() {
         return Err("path is not a file".into());
     }
@@ -206,20 +204,24 @@ exit 0
 "#
     );
 
-    let out = Command::new("powershell.exe")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-WindowStyle",
-            "Hidden",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            &script,
-        ])
-        .creation_flags(0x0800_0000)
-        .output()
-        .map_err(|e| format!("powershell: {e}"))?;
+    let mut ps_cmd = Command::new("powershell.exe");
+    ps_cmd.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-WindowStyle",
+        "Hidden",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        &script,
+    ]);
+    let out = crate::services::process_launch::run_output(
+        "office_printer_route",
+        "word_print_com",
+        ps_cmd,
+        crate::services::process_launch::TIMEOUT_DEFAULT,
+    )
+    .map_err(|e| format!("powershell: {e}"))?;
 
     let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();

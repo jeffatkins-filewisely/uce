@@ -405,12 +405,15 @@ pub fn filewisely_fail_office_path(from: &Path, error_json: &str) -> Result<(), 
 
 #[cfg(windows)]
 fn hide_staging_dir_once(dir: &Path) {
-    use std::os::windows::process::CommandExt;
     let s = dir.to_string_lossy();
-    let _ = Command::new("cmd")
-        .args(["/C", "attrib", "+h", s.as_ref()])
-        .creation_flags(0x0800_0000)
-        .output();
+    let mut c = Command::new("cmd.exe");
+    c.args(["/C", "attrib", "+h", s.as_ref()]);
+    let _ = super::process_launch::run_output(
+        "converter",
+        "hide_staging_attrib",
+        c,
+        super::process_launch::TIMEOUT_DEFAULT,
+    );
 }
 
 #[cfg(not(windows))]
@@ -872,15 +875,13 @@ pub(crate) fn convert_staged_office_to_pdf(
         ])
         .env("SAL_USE_VCLPLUGIN", "svp");
 
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        }
-
-        let output = cmd.output().map_err(|e| {
-            format!("Failed to run LibreOffice: {e}. Is it installed?")
-        })?;
+        let output = super::process_launch::run_output(
+            "converter",
+            "libreoffice_convert_pdf",
+            cmd,
+            super::process_launch::TIMEOUT_LIBREOFFICE,
+        )
+        .map_err(|e| format!("Failed to run LibreOffice: {e}. Is it installed?"))?;
 
         if output.status.success() && pdf_from_lo.is_file() {
             let _ = fs::remove_file(&pdf_final);

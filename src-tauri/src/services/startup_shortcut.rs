@@ -31,38 +31,54 @@ pub fn ensure_filewisely_uce_shortcut() -> Result<String, String> {
         escape_ps_single_quoted(&work_dir),
     );
 
-    let status = Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &ps])
-        .status()
-        .map_err(|e| format!("powershell: {e}"))?;
+    let mut ps_cmd = Command::new("powershell.exe");
+    ps_cmd.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-WindowStyle",
+        "Hidden",
+        "-Command",
+        &ps,
+    ]);
+    let out = super::process_launch::run_output(
+        "startup_shortcut",
+        "create_startup_lnk",
+        ps_cmd,
+        super::process_launch::TIMEOUT_DEFAULT,
+    )
+    .map_err(|e| format!("powershell: {e}"))?;
 
-    if !status.success() {
+    if !out.status.success() {
         return Err(format!(
             "Startup shortcut: powershell exited with {:?}",
-            status.code()
+            out.status.code()
         ));
     }
 
     // Backup autostart (MSI has no Inno `install.ps1`). If both Run + .lnk fire at logon, single-instance keeps one process.
     let reg_value = format!("\"{}\"", target.replace('"', ""));
-    let reg = Command::new("reg.exe")
-        .args([
-            "add",
-            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
-            "/v",
-            "FileWiselyUCE",
-            "/t",
-            "REG_SZ",
-            "/d",
-            &reg_value,
-            "/f",
-        ])
-        .status();
-    match reg {
-        Ok(s) if s.success() => {}
-        Ok(s) => eprintln!(
+    let mut reg_cmd = Command::new("reg.exe");
+    reg_cmd.args([
+        "add",
+        r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
+        "/v",
+        "FileWiselyUCE",
+        "/t",
+        "REG_SZ",
+        "/d",
+        &reg_value,
+        "/f",
+    ]);
+    match super::process_launch::run_output(
+        "startup_shortcut",
+        "hkcu_run_reg",
+        reg_cmd,
+        super::process_launch::TIMEOUT_DEFAULT,
+    ) {
+        Ok(o) if o.status.success() => {}
+        Ok(o) => eprintln!(
             "[UCE] HKCU Run FileWiselyUCE: reg.exe failed (exit {:?}); Startup .lnk still created.",
-            s.code()
+            o.status.code()
         ),
         Err(e) => eprintln!(
             "[UCE] HKCU Run FileWiselyUCE: could not run reg.exe ({e}); Startup .lnk still created."

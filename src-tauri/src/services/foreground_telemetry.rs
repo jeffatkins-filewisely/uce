@@ -154,36 +154,41 @@ pub fn spawn_foreground_debug_poll_after_detection() {
 
 #[cfg(windows)]
 fn parent_process_line(pid: u32) -> Option<String> {
-    use std::os::windows::process::CommandExt;
     let parent_pid: u32 = {
-        let out = Command::new("powershell.exe")
-            .args([
-                "-NoProfile",
-                "-Command",
-                &format!(
-                    "(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').ParentProcessId"
-                ),
-            ])
-            .creation_flags(0x0800_0000)
-            .output()
-            .ok()?;
+        let mut c = Command::new("powershell.exe");
+        c.args([
+            "-NoProfile",
+            "-Command",
+            &format!("(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').ParentProcessId"),
+        ]);
+        let out = crate::services::process_launch::run_output(
+            "foreground_telemetry",
+            "cim_parent_pid",
+            c,
+            crate::services::process_launch::TIMEOUT_DEFAULT,
+        )
+        .ok()?;
         if !out.status.success() {
             return None;
         }
         String::from_utf8_lossy(&out.stdout).trim().parse().ok()?
     };
     let parent_name = {
-        let out = Command::new("powershell.exe")
-            .args([
-                "-NoProfile",
-                "-Command",
-                &format!(
-                    "(Get-CimInstance Win32_Process -Filter 'ProcessId={parent_pid}').Name"
-                ),
-            ])
-            .creation_flags(0x0800_0000)
-            .output()
-            .ok()?;
+        let mut c = Command::new("powershell.exe");
+        c.args([
+            "-NoProfile",
+            "-Command",
+            &format!(
+                "(Get-CimInstance Win32_Process -Filter 'ProcessId={parent_pid}').Name"
+            ),
+        ]);
+        let out = crate::services::process_launch::run_output(
+            "foreground_telemetry",
+            "cim_parent_name",
+            c,
+            crate::services::process_launch::TIMEOUT_DEFAULT,
+        )
+        .ok()?;
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     };
     Some(format!(

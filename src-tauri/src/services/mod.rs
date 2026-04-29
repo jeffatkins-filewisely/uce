@@ -10,6 +10,7 @@ pub mod office_printer_route;
 pub mod js_runtime_diag;
 pub mod popup_suppression;
 pub mod native_message_box;
+pub mod process_launch;
 pub mod popup_log;
 pub mod incoming_emit;
 pub mod incoming_unique_rename;

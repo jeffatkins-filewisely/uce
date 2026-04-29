@@ -30,10 +30,14 @@ $names = @(Get-Printer -ErrorAction SilentlyContinue |
   ForEach-Object { $_.Name })
 @{ filewisely_exact = $exact; matching_names = @($names) } | ConvertTo-Json -Compress -Depth 5
 "#;
-    let out = std::process::Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", PS])
-        .output()
-        .map_err(|e| format!("powershell: {e}"))?;
+    let mut c = std::process::Command::new("powershell.exe");
+    c.args(["-NoProfile", "-NonInteractive", "-Command", PS]);
+    let out = super::process_launch::run_output(
+        "printer_check",
+        "enumerate_printers_json",
+        c,
+        super::process_launch::TIMEOUT_DEFAULT,
+    )?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
         return Err(format!("printer check failed: {err}"));
@@ -98,10 +102,21 @@ if ($cand) {
   try { Rename-Printer -Name $cand.Name -NewName $DisplayName -ErrorAction Stop } catch {}
 }
 "#;
-    let out = std::process::Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", PS])
-        .output()
-        .map_err(|e| format!("powershell: {e}"))?;
+    let mut c = std::process::Command::new("powershell.exe");
+    c.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        PS,
+    ]);
+    let out = super::process_launch::run_output(
+        "printer_check",
+        "rename_pdf_queue",
+        c,
+        super::process_launch::TIMEOUT_DEFAULT,
+    )?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
     }
@@ -146,17 +161,22 @@ try {{
   exit 1
 }}"#
     );
-    std::process::Command::new("powershell.exe")
-        // Do not use -NonInteractive: UAC / elevation may require a logged-in desktop session.
-        .args([
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            &script,
-        ])
-        .status()
-        .map_err(|e| format!("elevated PDF installer: {e}"))
+    let mut c = std::process::Command::new("powershell.exe");
+    // Do not use -NonInteractive: UAC / elevation may require a logged-in desktop session.
+    c.args([
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        &script,
+    ]);
+    let out = super::process_launch::run_output(
+        "printer_check",
+        "elevated_pdf_setup",
+        c,
+        super::process_launch::TIMEOUT_UAC_ASSIST,
+    )?;
+    Ok(out.status)
 }
 
 #[cfg(windows)]

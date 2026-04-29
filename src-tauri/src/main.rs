@@ -2114,6 +2114,7 @@ pub fn run() {
         })
         .setup(|app| {
             services::popup_suppression::init_defaults_for_build_profile();
+            services::process_launch::log_startup_policy();
             #[cfg(windows)]
             {
                 use tauri_plugin_deep_link::DeepLinkExt;
