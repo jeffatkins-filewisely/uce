@@ -1588,6 +1588,7 @@ fn focus_overlay(window: tauri::Window) -> Result<(), String> {
 /// Windows-only: real `MessageBox` so the alert is never clipped by the tiny overlay WebView (38×38).
 #[cfg(windows)]
 fn printer_severe_native_message_box() {
+    services::printer_alert_policy::record_native_printer_alert("printer_severe");
     eprintln!("UCE_UI_NATIVE_ALERT kind=printer_severe title=\"UCE — Printer issue\"");
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
@@ -1630,10 +1631,12 @@ async fn uce_printer_severe_native_alert() -> Result<(), String> {
             );
             return Ok(());
         }
-        if uce_suppress_printer_severe_for_ccc_capture() {
+        if !services::printer_alert_policy::native_dialog_allowed_for_missing_printer() {
             eprintln!(
-                "UCE_UI_NATIVE_ALERT skipped kind=printer_severe reason=ccc_temp_capture_active pipeline={}",
-                services::capture_pipeline_status::status_label()
+                "UCE_PRINTER_WARNING_ONLY kind=printer_severe native_dialog=suppressed policy={} printer_required_effective={} ccc_capture_suppresses={}",
+                services::printer_alert_policy::alert_policy_label(),
+                services::printer_alert_policy::printer_required_effective(),
+                services::printer_alert_policy::ccc_capture_suppresses_native(),
             );
             return Ok(());
         }
@@ -1847,24 +1850,15 @@ fn uce_check_filewisely_printer() -> Result<PrinterCheckResult, String> {
     services::printer_check::check_filewisely_printer()
 }
 
-/// Policy for whether missing **FileWisely Printer** should block / severe-alert the UI.
-#[derive(Serialize)]
-struct UcePrinterPolicySnapshot {
-    ccc_temp_watch_only: bool,
-    /// When true, skip native / severe printer dialogs: CCC temp mode and print watcher thread is running.
-    suppress_printer_severe_native: bool,
-}
-
-fn uce_suppress_printer_severe_for_ccc_capture() -> bool {
-    print_config::ccc_temp_watch_only() && services::capture_pipeline_status::is_watcher_running()
+#[tauri::command]
+fn uce_sync_printer_ui_policy(printer_required: bool) -> Result<(), String> {
+    services::printer_alert_policy::set_js_printer_required(printer_required);
+    Ok(())
 }
 
 #[tauri::command]
-fn uce_printer_policy_snapshot() -> UcePrinterPolicySnapshot {
-    UcePrinterPolicySnapshot {
-        ccc_temp_watch_only: print_config::ccc_temp_watch_only(),
-        suppress_printer_severe_native: uce_suppress_printer_severe_for_ccc_capture(),
-    }
+fn uce_printer_policy_snapshot() -> services::printer_alert_policy::PrinterPolicyDiagnostics {
+    services::printer_alert_policy::policy_snapshot()
 }
 
 /// Self-healing: re-run PDF printer silent install + rename (cooldown enforced in JS).
@@ -2182,6 +2176,7 @@ pub fn run() {
             uce_open_url,
             uce_copy_into_incoming,
             uce_check_filewisely_printer,
+            uce_sync_printer_ui_policy,
             uce_printer_policy_snapshot,
             uce_printer_severe_native_alert,
             repair_printer,

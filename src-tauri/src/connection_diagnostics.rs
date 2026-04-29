@@ -218,6 +218,9 @@ fn capture_pipeline_snapshot(app: &AppHandle) -> serde_json::Value {
         .collect();
     let ccc_temp = print_config::ccc_temp_watch_path();
 
+    let printer_alert = serde_json::to_value(crate::services::printer_alert_policy::policy_snapshot())
+        .unwrap_or(json!({}));
+
     let mut cap = json!({
         "pdf_watch_json_path": pdf_watch_path,
         "capture_pipeline_status": capture_pipeline_status::status_label(),
@@ -226,8 +229,7 @@ fn capture_pipeline_snapshot(app: &AppHandle) -> serde_json::Value {
         "ccc_temp_watch_path": ccc_temp.to_string_lossy(),
         "watched_incoming_root": print_config::watched_incoming_root().to_string_lossy(),
         "ccc_temp_watch_only_env": print_config::ccc_temp_watch_only(),
-        "suppress_printer_severe_native": print_config::ccc_temp_watch_only()
-            && capture_pipeline_status::is_watcher_running(),
+        "printer_alert": printer_alert,
         "auto_discovered_ccc_dirs": pw.auto_discovered_ccc_dirs,
         "general_document_capture_enabled": pw.general_document_capture_enabled,
         "general_min_file_bytes": pw.general_min_file_bytes,
@@ -245,7 +247,7 @@ fn capture_pipeline_snapshot(app: &AppHandle) -> serde_json::Value {
             "Popups: stderr UCE_UI_NATIVE_ALERT kind=printer_severe|printer_repair_uac|webview_load_failed|dev_server_unreachable before each Windows MessageBox. Env UCE_SUPPRESS_PRINTER_NATIVE_ALERT=1 or localStorage uce_suppress_printer_severe_modal=1.",
             "JS console: UCE_UPLOAD_STARTED / UCE_UPLOAD_SUCCESS|SKIPPED|FAILED, UCE_UI_CLIENT kind=printer_severe_modal — DevTools when WebView is up.",
             "Search stderr for UCE_GENERAL_FILE_* / UCE_CCC_* — run UCE from Command Prompt to see lines.",
-            "Printer: when UCE_CCC_TEMP_WATCH_ONLY and capture_pipeline_status=running, severe/native printer alerts are suppressed (suppress_printer_severe_native from uce_printer_policy_snapshot). Env UCE_SUPPRESS_PRINTER_NATIVE_ALERT=1 also skips MessageBox.",
+            "Printer: default warning-only — no MessageBox unless UCE_PRINTER_REQUIRED=1 or localStorage uce_printer_required=1 (sync via uce_sync_printer_ui_policy). CCC temp + watcher running forces warning_only. See capture_pipeline.printer_alert and stderr UCE_PRINTER_WARNING_ONLY.",
             "Toast every ~25s: health attention — expand Connection Doctor status (capture_pipeline) for printer/upload stale.",
             "WebView 'Could not load': classification chrome_error_page in diagnostics — start Vite (dev) or reinstall (prod)."
         ],
@@ -511,6 +513,11 @@ fn format_capture_pipeline_plain(cp: &serde_json::Value) -> String {
     out.push_str("ccc_temp_watch_only_env (UCE_CCC_TEMP_WATCH_ONLY): ");
     out.push_str(&gbool("ccc_temp_watch_only_env"));
     out.push('\n');
+    if let Some(pa) = cp.get("printer_alert") {
+        out.push_str("printer_alert (policy snapshot):\n");
+        out.push_str(&serde_json::to_string_pretty(pa).unwrap_or_else(|_| "{}".into()));
+        out.push('\n');
+    }
     out.push_str("general_document_capture_enabled: ");
     out.push_str(&gbool("general_document_capture_enabled"));
     out.push('\n');

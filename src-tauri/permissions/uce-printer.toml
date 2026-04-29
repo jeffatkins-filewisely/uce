@@ -4,5 +4,6 @@ description = "Printer health check and Bullzip repair invoked from the UCE fron
 commands.allow = [
     "repair_printer",
     "uce_check_filewisely_printer",
+    "uce_sync_printer_ui_policy",
     "uce_printer_policy_snapshot",
 ]

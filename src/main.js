@@ -3342,13 +3342,35 @@ let coreUnhealthySince = null;
 /** From `uce_printer_policy_snapshot` — refreshed on a TTL in `refreshPrinterPolicyCache`. */
 let ucePrinterPolicyCache = {
   ccc_temp_watch_only: false,
-  suppress_printer_severe_native: false,
+  suppress_printer_severe_native: true,
+  native_dialog_allowed_for_missing_printer: false,
+  printer_alert_policy: "warning_only",
   loadedAt: 0,
 };
 const PRINTER_POLICY_CACHE_MS = 30_000;
 /** Severe printer modal / native alert — avoid spam if health keeps polling. */
 const PRINTER_SEVERE_MODAL_DEBOUNCE_MS = 15 * 60 * 1000;
 let lastPrinterSevereModalShownAt = 0;
+
+/** Normalize `uce_printer_policy_snapshot` (camelCase from Rust). */
+function snapPrinterPolicy(raw) {
+  const s = raw && typeof raw === "object" ? raw : {};
+  return {
+    ccc_temp_watch_only: !!(s.cccTempWatchOnly ?? s.ccc_temp_watch_only),
+    suppress_printer_severe_native: !!(
+      s.suppressPrinterSevereNative ?? s.suppress_printer_severe_native ?? true
+    ),
+    native_dialog_allowed_for_missing_printer: !!(
+      s.nativeDialogAllowedForMissingPrinter ??
+      s.native_dialog_allowed_for_missing_printer
+    ),
+    printer_alert_policy: String(
+      s.printerAlertPolicy ??
+        s.printer_alert_policy ??
+        "warning_only"
+    ),
+  };
+}
 
 async function refreshPrinterPolicyCache() {
   const now = Date.now();
@@ -3359,10 +3381,13 @@ async function refreshPrinterPolicyCache() {
     return;
   }
   try {
+    await invoke("uce_sync_printer_ui_policy", {
+      printerRequired: isUcePrinterRequiredExplicit(),
+    });
     const s = await invoke("uce_printer_policy_snapshot");
+    const z = snapPrinterPolicy(s);
     ucePrinterPolicyCache = {
-      ccc_temp_watch_only: !!s?.ccc_temp_watch_only,
-      suppress_printer_severe_native: !!s?.suppress_printer_severe_native,
+      ...z,
       loadedAt: Date.now(),
     };
   } catch (_) {
@@ -3370,14 +3395,15 @@ async function refreshPrinterPolicyCache() {
   }
 }
 
-/** Missing printer is warn-only unless print queue is required and shop is not CCC-temp-only. */
+/**
+ * True = missing queue can be ignored for severe/native escalation (default shop).
+ * Native MessageBox only when Rust policy `native_dialog_allowed_for_missing_printer` (UCE_PRINTER_REQUIRED or localStorage + sync), except CCC capture suppresses native.
+ */
 function isUceMissingPrinterNonCritical() {
-  if (ucePrinterPolicyCache.suppress_printer_severe_native) {
+  if (!ucePrinterPolicyCache.native_dialog_allowed_for_missing_printer) {
     return true;
   }
-  return (
-    !isUcePrinterRequiredExplicit() || ucePrinterPolicyCache.ccc_temp_watch_only
-  );
+  return false;
 }
 /** Dedupe health toasts — same detail string does not repeat until healthy or detail changes. */
 let lastHealthAttentionToastSignature = "";
