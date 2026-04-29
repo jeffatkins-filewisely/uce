@@ -4,6 +4,8 @@ use serde::Serialize;
 use std::path::Path;
 use tauri::Emitter;
 
+use crate::services::pipeline_stage_diag;
+
 #[derive(Clone, Serialize)]
 pub struct IncomingFileEvent {
     pub path: String,
@@ -23,6 +25,7 @@ pub fn is_fw_incoming_pdf_path(path: &str) -> bool {
 }
 
 pub fn emit_uce_incoming_pdf(app: &tauri::AppHandle, path_str: String) {
+    pipeline_stage_diag::record_emit_incoming(&path_str);
     eprintln!(
         "UCE_RUST_EMIT_INCOMING path={} event=uce-incoming-file kind=pdf fw_named={}",
         path_str,

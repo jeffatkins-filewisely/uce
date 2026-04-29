@@ -289,6 +289,15 @@ async function uploadFwPdfCore(rawPath, meta, source) {
     }
     console.info(`[UCE] trace js_upload_started path=${rawPath}`);
     console.info(`UCE_UPLOAD_STARTED path=${rawPath}`);
+    try {
+      await invoke("uce_pipeline_upload_stage", {
+        path: rawPath,
+        stage: "attempt",
+        detail: null,
+      });
+    } catch (_) {
+      /* optional */
+    }
     const capture = await invoke("read_pdf_file", { path: rawPath });
     pipelinePath = capture.file_path || rawPath;
     if (fwKeyPath(pipelinePath) !== fwKeyPath(rawPath)) {
@@ -321,6 +330,15 @@ async function uploadFwPdfCore(rawPath, meta, source) {
       st.uploadFinished = true;
       st.uploadFailed = false;
       console.info(`UCE_UPLOAD_SUCCESS path=${pipelinePath}`);
+      try {
+        await invoke("uce_pipeline_upload_stage", {
+          path: pipelinePath,
+          stage: "success",
+          detail: null,
+        });
+      } catch (_) {
+        /* optional */
+      }
       emitUceContextCapturedIfRelevant({
         source: "auto_pdf_incoming",
         fileHint: pipelinePath.split(/[\\/]/).pop() || null,
@@ -424,6 +442,18 @@ async function uploadFwPdfCore(rawPath, meta, source) {
     console.error(
       `UCE_UPLOAD_FAILED path=${pipelinePath} message=${typeof oneErr === "string" ? oneErr : oneErr?.message || String(oneErr)}`
     );
+    try {
+      await invoke("uce_pipeline_upload_stage", {
+        path: pipelinePath,
+        stage: "failure",
+        detail:
+          typeof oneErr === "string"
+            ? oneErr
+            : oneErr?.message || String(oneErr),
+      });
+    } catch (_) {
+      /* optional */
+    }
     console.info(`[UCE] trace js_upload_failed path=${pipelinePath}`);
     const pdfName = pipelinePath.split(/[\\/]/).pop() || "file.pdf";
     console.error(`[UCE] Upload failed: ${pdfName}`, oneErr);

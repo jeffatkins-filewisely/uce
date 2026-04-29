@@ -11,6 +11,7 @@ pub mod incoming_emit;
 pub mod incoming_unique_rename;
 pub mod foreground_telemetry;
 pub mod file_normalizer;
+pub mod pipeline_stage_diag;
 pub mod printer_alert_policy;
 pub mod printer_check;
 pub mod print_watcher;

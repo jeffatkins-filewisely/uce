@@ -19,6 +19,7 @@ use crate::config::print_config::{self, FW_PRINTER_DISPLAY_NAME};
 use crate::pdf_watch_config;
 use crate::services::capture_pipeline_status;
 use crate::services::ccc_batch;
+use crate::services::pipeline_stage_diag;
 use crate::services::converter;
 use crate::services::foreground_telemetry;
 use crate::services::incoming_emit;
@@ -217,11 +218,13 @@ fn log_general_pdf_captured_if_needed(matched_rule: &str, pdf_path: &str) {
 }
 
 fn handle_path(app: &tauri::AppHandle, path: std::path::PathBuf) {
+    let path_disp = path.to_string_lossy().into_owned();
     eprintln!(
         "UCE_FILE_DETECTED_RAW path={} is_file={}",
         path.display(),
         path.is_file()
     );
+    pipeline_stage_diag::record_detected(&path_disp);
 
     if print_config::ccc_temp_watch_only() {
         if !path.is_file() {
@@ -229,6 +232,7 @@ fn handle_path(app: &tauri::AppHandle, path: std::path::PathBuf) {
                 "UCE_FILE_REJECTED path={} reason=not_a_file_ccc_temp_mode",
                 path.display()
             );
+            pipeline_stage_diag::record_rejected(&path_disp, "not_a_file_ccc_temp_mode");
             return;
         }
         if converter::path_is_under_uce_staging(&path) {
@@ -236,6 +240,7 @@ fn handle_path(app: &tauri::AppHandle, path: std::path::PathBuf) {
                 "UCE_FILE_REJECTED path={} reason=uce_staging_internal",
                 path.display()
             );
+            pipeline_stage_diag::record_rejected(&path_disp, "uce_staging_internal");
             return;
         }
         foreground_telemetry::spawn_foreground_debug_poll_after_detection();
@@ -252,6 +257,7 @@ fn handle_path(app: &tauri::AppHandle, path: std::path::PathBuf) {
             "UCE_FILE_REJECTED path={} reason=no_pdf_office_extension",
             path.display()
         );
+        pipeline_stage_diag::record_rejected(&path_disp, "no_pdf_office_extension");
         return;
     };
 
@@ -307,17 +313,23 @@ fn handle_path(app: &tauri::AppHandle, path: std::path::PathBuf) {
                             m.len(),
                             min_b
                         );
+                        pipeline_stage_diag::record_rejected(
+                            &path_disp,
+                            &format!("too_small bytes={} min_b={}", m.len(), min_b),
+                        );
                         return;
                     }
                 }
             }
 
             let path = incoming_unique_rename::unique_rename_incoming_pdf_if_needed(path);
+            let path_disp_pdf = path.to_string_lossy().into_owned();
             if !path.is_file() {
                 eprintln!(
                     "UCE_FILE_REJECTED path={} reason=vanished_after_incoming_rename",
                     path.display()
                 );
+                pipeline_stage_diag::record_rejected(&path_disp_pdf, "vanished_after_incoming_rename");
                 return;
             }
             if !wait_for_pdf_file_stable(&path) {
@@ -335,6 +347,7 @@ fn handle_path(app: &tauri::AppHandle, path: std::path::PathBuf) {
                     "UCE_FILE_REJECTED path={} reason=not_stable_or_locked",
                     path.display()
                 );
+                pipeline_stage_diag::record_rejected(&path_disp_pdf, "not_stable_or_locked");
                 return;
             }
             eprintln!("[UCE] File stable: {}", path.display());
@@ -344,15 +357,21 @@ fn handle_path(app: &tauri::AppHandle, path: std::path::PathBuf) {
                 path.display(),
                 matched_rule
             );
+            pipeline_stage_diag::record_accepted(
+                &path_str,
+                Some(format!("kind=pdf matched_rule={matched_rule}")),
+            );
             log_general_pdf_captured_if_needed(matched_rule, &path_str);
             incoming_emit::emit_uce_incoming_pdf(app, path_str);
         }
         "office" => {
+            let office_disp = path.to_string_lossy().into_owned();
             if !path.is_file() {
                 eprintln!(
                     "UCE_FILE_REJECTED path={} reason=not_a_file_office_branch",
                     path.display()
                 );
+                pipeline_stage_diag::record_rejected(&office_disp, "not_a_file_office_branch");
                 return;
             }
 
@@ -371,19 +390,29 @@ fn handle_path(app: &tauri::AppHandle, path: std::path::PathBuf) {
                             m.len(),
                             min_b
                         );
+                        pipeline_stage_diag::record_rejected(
+                            &office_disp,
+                            &format!("too_small_office bytes={} min_b={}", m.len(), min_b),
+                        );
                         return;
                     }
                 }
             }
 
             let path = incoming_unique_rename::unique_rename_incoming_office_if_needed(path);
+            let office_final = path.to_string_lossy().into_owned();
             if !path.is_file() {
                 eprintln!(
                     "UCE_FILE_REJECTED path={} reason=vanished_after_office_rename",
                     path.display()
                 );
+                pipeline_stage_diag::record_rejected(&office_final, "vanished_after_office_rename");
                 return;
             }
+            pipeline_stage_diag::record_accepted(
+                &office_final,
+                Some(format!("kind=office matched_rule={matched_rule}")),
+            );
             ccc_capture_diag::record_ccc_file_seen(&path, Some(matched_rule));
             let app = app.clone();
             let rule = matched_rule;

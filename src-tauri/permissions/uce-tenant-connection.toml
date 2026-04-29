@@ -13,4 +13,5 @@ commands.allow = [
   "uce_get_connection_diagnostics",
   "uce_test_ingest_connection",
   "uce_copy_diagnostic_report",
+  "uce_pipeline_upload_stage",
 ]

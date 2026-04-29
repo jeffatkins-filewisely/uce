@@ -244,6 +244,8 @@ fn capture_pipeline_snapshot(app: &AppHandle) -> serde_json::Value {
             "Connection OK but no captures: confirm PDFs land under a watched folder — CCC Temp\\\\CCC, FileWisely Incoming, or (if enabled) Documents/Downloads.",
             "CCC temp: OS watcher can miss fast writes — 1s polling backup logs UCE_POLL_SCAN_* / UCE_POLL_DETECTED_FILE.",
             "Trace capture: stderr UCE_FILE_DETECTED_RAW, UCE_PIPELINE_CONTEXT, UCE_FILE_ACCEPTED, UCE_FILE_COPY_*, UCE_RUST_EMIT_INCOMING, UCE_FILE_REJECTED — run UCE from cmd.",
+            "Pipeline rings (this report): last_detected_files, last_rejected_files, last_accepted_files, last_copy_*, last_emitted_incoming_files, last_upload_* — see JSON keys on capture_pipeline.",
+            "When UCE_CCC_TEMP_WATCH_ONLY is false, CCC Temp\\\\CCC PDFs still use the same handle_path → emit_uce_incoming_pdf path as other watch roots (not the CCC batch queue).",
             "Popups: stderr UCE_UI_NATIVE_ALERT kind=printer_severe|printer_repair_uac|webview_load_failed|dev_server_unreachable before each Windows MessageBox. Env UCE_SUPPRESS_PRINTER_NATIVE_ALERT=1 or localStorage uce_suppress_printer_severe_modal=1.",
             "JS console: UCE_UPLOAD_STARTED / UCE_UPLOAD_SUCCESS|SKIPPED|FAILED, UCE_UI_CLIENT kind=printer_severe_modal — DevTools when WebView is up.",
             "Search stderr for UCE_GENERAL_FILE_* / UCE_CCC_* — run UCE from Command Prompt to see lines.",
@@ -252,6 +254,14 @@ fn capture_pipeline_snapshot(app: &AppHandle) -> serde_json::Value {
             "WebView 'Could not load': classification chrome_error_page in diagnostics — start Vite (dev) or reinstall (prod)."
         ],
     });
+
+    if let serde_json::Value::Object(ref mut m) = cap {
+        if let serde_json::Value::Object(pt) = crate::services::pipeline_stage_diag::snapshot_json() {
+            for (k, v) in pt {
+                m.insert(k, v);
+            }
+        }
+    }
 
     if let (
         serde_json::Value::Object(ref mut m),
@@ -517,6 +527,26 @@ fn format_capture_pipeline_plain(cp: &serde_json::Value) -> String {
         out.push_str("printer_alert (policy snapshot):\n");
         out.push_str(&serde_json::to_string_pretty(pa).unwrap_or_else(|_| "{}".into()));
         out.push('\n');
+    }
+    out.push_str("--- pipeline stage rings (recent, Connection Doctor JSON keys) ---\n");
+    for key in [
+        "last_detected_files",
+        "last_rejected_files",
+        "last_accepted_files",
+        "last_copy_attempts",
+        "last_copy_successes",
+        "last_copy_failures",
+        "last_emitted_incoming_files",
+        "last_upload_attempts",
+        "last_upload_successes",
+        "last_upload_failures",
+    ] {
+        if let Some(v) = cp.get(key) {
+            out.push_str(key);
+            out.push_str(":\n");
+            out.push_str(&serde_json::to_string_pretty(v).unwrap_or_else(|_| "[]".into()));
+            out.push_str("\n\n");
+        }
     }
     out.push_str("general_document_capture_enabled: ");
     out.push_str(&gbool("general_document_capture_enabled"));

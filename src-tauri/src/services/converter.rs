@@ -10,6 +10,7 @@
 
 use crate::config::print_config;
 use crate::services::foreground_telemetry;
+use crate::services::pipeline_stage_diag;
 
 use serde_json::json;
 use std::collections::HashSet;
@@ -458,6 +459,7 @@ fn claim_file_to_staging(
         claim_tag,
         kind
     );
+    pipeline_stage_diag::record_copy_attempt(&original.to_string_lossy());
 
     let (interval_ms, max_attempts) = if print_config::ccc_temp_watch_only() {
         (150u64, 34usize)
@@ -511,6 +513,7 @@ fn claim_file_to_staging(
                     );
                 }
                 eprintln!("UCE_FILE_COPY_SUCCESS staged_path={}", dest.display());
+                pipeline_stage_diag::record_copy_success(&dest.to_string_lossy());
                 if print_config::ccc_temp_watch_only() {
                     let staging_move_unix_ms = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
@@ -580,6 +583,10 @@ fn claim_file_to_staging(
         "UCE_FILE_COPY_FAILED path={} last_err={}",
         original.display(),
         last_err.as_deref().unwrap_or("unknown")
+    );
+    pipeline_stage_diag::record_copy_failure(
+        &original.to_string_lossy(),
+        last_err.as_deref().unwrap_or("unknown"),
     );
 
     Err(format!(

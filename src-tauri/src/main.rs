@@ -1680,6 +1680,25 @@ fn load_window_position(app: tauri::AppHandle) -> Result<Option<WindowPosition>,
     Ok(Some(pos))
 }
 
+/// JS upload pipeline: record last attempt / success / failure in Connection Doctor ring buffers.
+#[tauri::command]
+fn uce_pipeline_upload_stage(
+    path: String,
+    stage: String,
+    detail: Option<String>,
+) -> Result<(), String> {
+    match stage.as_str() {
+        "attempt" => services::pipeline_stage_diag::record_upload_attempt(&path),
+        "success" => services::pipeline_stage_diag::record_upload_success(&path),
+        "failure" => services::pipeline_stage_diag::record_upload_failure(
+            &path,
+            detail.as_deref().unwrap_or("unknown"),
+        ),
+        _ => return Err(format!("unknown pipeline upload stage: {stage}")),
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn get_debug_state(app: tauri::AppHandle) -> Result<DebugState, String> {
     Ok(DebugState {
@@ -2193,6 +2212,7 @@ pub fn run() {
             connection_diagnostics::uce_get_connection_diagnostics,
             connection_diagnostics::uce_test_ingest_connection,
             connection_diagnostics::uce_copy_diagnostic_report,
+            uce_pipeline_upload_stage,
             uce_ccc_capture_test,
             uce_ccc_run_autodiscovery,
             uce_ccc_last_files_seen
