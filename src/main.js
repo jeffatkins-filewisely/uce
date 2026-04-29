@@ -5476,6 +5476,17 @@ function logFwUploadDecisionFields(path, fields) {
   );
 }
 
+/** Stable hint for uce-ingest / provenance (maps JS capture_source). */
+function resolveUceSourceHint(captureSource) {
+  const s = String(captureSource || "unknown").trim();
+  if (!s || s === "unknown") return "uce_unknown";
+  if (s === "auto_pdf_folder") return "uce_watcher_auto_pdf";
+  if (s === "uce_force_incoming") return "uce_incoming_force_upload";
+  if (s === "button_screenshot") return "uce_button_screenshot";
+  if (s.startsWith("uce_")) return s;
+  return `uce_${s}`;
+}
+
 async function uploadCapture(
   capturePayload,
   contextSnapshot,
@@ -5506,6 +5517,10 @@ async function uploadCapture(
     (fwPipelinePath && String(fwPipelinePath)) ||
     capturePayload?.file_path ||
     "";
+  const sourceHint = resolveUceSourceHint(captureSource);
+  /** Same disk path as `file_path` for backends that persist `source_path` / provenance. */
+  const sourcePathForPayload =
+    isPdf && pathForPayload ? String(pathForPayload) : pathForPayload || "";
 
   if (fwPipelinePath) {
     await logPipeline("MATCHING_STARTED", fwPipelinePath, {
@@ -5552,6 +5567,8 @@ async function uploadCapture(
     captured_at: capturedAtIso,
     device_id: getDeviceId(),
     file_path: pathForPayload,
+    source_path: sourcePathForPayload,
+    source_hint: sourceHint,
     context: {
       source_app: sourceApp,
       window_title: windowTitle,
@@ -5568,6 +5585,8 @@ async function uploadCapture(
       captured_at: capturedAtIso,
       device_id: getDeviceId(),
       file_path: pathForPayload,
+      source_path: sourcePathForPayload,
+      source_hint: sourceHint,
       document_type: documentType,
       file_encoding: isPdf ? "base64_pdf" : "base64_image",
       workflow_kind: workflowKind,
@@ -5578,6 +5597,7 @@ async function uploadCapture(
       capture_message: capturePayload?.message || "",
       app_version: "uce-universal-capture-engine-v1",
       capture_source: captureSource,
+      source_hint: sourceHint,
       desktop_document_subtype: docSubtype || "unknown",
     },
   };
@@ -6191,12 +6211,14 @@ async function checkAutoPdfUpload(source = "poll") {
         }
         console.info(`UCE_UPLOAD_STARTED path=${newest.file_path}`);
         const capture = await invoke("read_pdf_file", { path: newest.file_path });
+        const pipelinePath = capture?.file_path || newest.file_path;
         const contextSnapshot = await getUploadContextSnapshot();
         const uploadResult = await uploadCapture(
           capture,
           contextSnapshot,
           "pdf",
-          "auto_pdf_folder"
+          "auto_pdf_folder",
+          pipelinePath
         );
         try {
           await invoke("uce_log_pdf_lifecycle", {

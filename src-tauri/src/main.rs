@@ -1468,7 +1468,10 @@ fn read_pdf_file(path: String) -> Result<PdfCaptureResponse, String> {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64;
-    let out_path = file_path.to_string_lossy().to_string();
+    let out_path = fs::canonicalize(&file_path)
+        .unwrap_or(file_path.clone())
+        .to_string_lossy()
+        .to_string();
     eprintln!("[UCE][pipeline] READ_PDF_OK path={}", out_path);
     Ok(PdfCaptureResponse {
         success: true,
