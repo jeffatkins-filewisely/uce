@@ -124,11 +124,24 @@ async function renderStatus() {
 
   root.innerHTML = `
 <div class="wrap">
-  <h1>Connection status</h1>
+  <h1>Connection &amp; capture status</h1>
+  <p class="hint">JSON below includes full <strong>capture_pipeline</strong>. <strong>Find CCC Folders</strong> scans typical CCC locations for recent PDFs/docs and saves paths to <code>auto_discovered_ccc_dirs</code> (watchers refresh ~60s). <strong>Copy diagnostic report</strong> includes capture health. <strong>CCC Capture Test</strong> waits for a <em>new</em> PDF (30s). If the test fails, auto-discovery runs once automatically. Popups: <code>trace_hints</code> / <code>uce_suppress_printer_severe_modal</code>.</p>
   <pre class="mono">${esc(JSON.stringify(j, null, 2))}</pre>
   <p class="mini">Last heartbeat (UTC): ${esc(lastHuman)}</p>
-  <button type="button" id="cdRefresh">Refresh</button>
-  <button type="button" id="cdCopy" class="secondary">Copy diagnostic report</button>
+  <div class="row">
+    <button type="button" id="cdRefresh">Refresh</button>
+    <button type="button" id="cdCopy" class="secondary">Copy diagnostic report</button>
+  </div>
+  <div class="row">
+    <button type="button" id="cdCccTest" class="secondary">Run CCC Capture Test (30s)</button>
+    <button type="button" id="cdCccTestCopy" class="secondary" hidden>Copy CCC test result</button>
+  </div>
+  <pre id="cdCccTestOut" class="mono out" hidden></pre>
+  <div class="row">
+    <button type="button" id="cdCccDiscover" class="secondary">Find CCC Folders</button>
+    <button type="button" id="cdCccDiscoverCopy" class="secondary" hidden>Copy discovery result</button>
+  </div>
+  <pre id="cdCccDiscoverOut" class="mono out" hidden></pre>
 </div>`;
 
   document.getElementById("cdRefresh").addEventListener("click", () => {
@@ -137,7 +150,99 @@ async function renderStatus() {
   document.getElementById("cdCopy").addEventListener("click", async () => {
     try {
       await invoke("uce_copy_diagnostic_report");
-      alert("Diagnostic report copied to clipboard (secrets masked).");
+      alert(
+        "Diagnostic report copied (connection + capture pipeline health; secrets masked)."
+      );
+    } catch (e) {
+      alert(String(e));
+    }
+  });
+
+  const cccTestBtn = document.getElementById("cdCccTest");
+  const cccTestOut = document.getElementById("cdCccTestOut");
+  const cccTestCopy = document.getElementById("cdCccTestCopy");
+  let lastCccTestResult = null;
+
+  cccTestBtn.addEventListener("click", async () => {
+    cccTestBtn.disabled = true;
+    cccTestOut.hidden = false;
+    cccTestOut.textContent =
+      "Running… Waits up to 30s for a new PDF under CCC temp / C:\\CCC / ProgramData CCC. Export or print from CCC to that tree now.";
+    cccTestOut.className = "mono out";
+    cccTestCopy.hidden = true;
+    lastCccTestResult = null;
+    try {
+      const result = await invoke("uce_ccc_capture_test", { timeoutSecs: 30 });
+      lastCccTestResult = result;
+      let text = JSON.stringify(result, null, 2);
+      if (result && result.ok === false) {
+        try {
+          const disc = await invoke("uce_ccc_run_autodiscovery");
+          text +=
+            "\n\n--- Auto-discovery after failed CCC test ---\n" +
+            JSON.stringify(disc, null, 2);
+        } catch (e2) {
+          text += `\n\n(auto-discovery error: ${e2})`;
+        }
+      }
+      cccTestOut.textContent = text;
+      cccTestOut.className = result?.ok ? "mono out ok" : "mono out bad";
+      cccTestCopy.hidden = false;
+    } catch (e) {
+      cccTestOut.textContent = String(e);
+      cccTestOut.className = "mono out bad";
+    } finally {
+      cccTestBtn.disabled = false;
+    }
+  });
+
+  cccTestCopy.addEventListener("click", async () => {
+    if (lastCccTestResult == null) return;
+    try {
+      await navigator.clipboard.writeText(
+        JSON.stringify(lastCccTestResult, null, 2)
+      );
+      alert("CCC test result copied.");
+    } catch (e) {
+      alert(String(e));
+    }
+  });
+
+  const discoverBtn = document.getElementById("cdCccDiscover");
+  const discoverOut = document.getElementById("cdCccDiscoverOut");
+  const discoverCopy = document.getElementById("cdCccDiscoverCopy");
+  let lastDiscoverResult = null;
+
+  discoverBtn.addEventListener("click", async () => {
+    discoverBtn.disabled = true;
+    discoverOut.hidden = false;
+    discoverOut.textContent =
+      "Scanning typical CCC paths for recent PDFs / CCC-like filenames…";
+    discoverOut.className = "mono out";
+    discoverCopy.hidden = true;
+    lastDiscoverResult = null;
+    try {
+      const disc = await invoke("uce_ccc_run_autodiscovery");
+      lastDiscoverResult = disc;
+      discoverOut.textContent = JSON.stringify(disc, null, 2);
+      discoverOut.className =
+        disc?.ok === false ? "mono out bad" : "mono out ok";
+      discoverCopy.hidden = false;
+    } catch (e) {
+      discoverOut.textContent = String(e);
+      discoverOut.className = "mono out bad";
+    } finally {
+      discoverBtn.disabled = false;
+    }
+  });
+
+  discoverCopy.addEventListener("click", async () => {
+    if (lastDiscoverResult == null) return;
+    try {
+      await navigator.clipboard.writeText(
+        JSON.stringify(lastDiscoverResult, null, 2)
+      );
+      alert("Discovery result copied.");
     } catch (e) {
       alert(String(e));
     }
@@ -157,7 +262,7 @@ function injectStyles() {
     button { padding: 10px 16px; border-radius: 8px; border: none; background: #3b82f6; color: #fff; font-weight: 600; cursor: pointer; font-size: 0.9rem; }
     button.secondary { background: #333; color: #ddd; }
     button:hover { filter: brightness(1.08); }
-    pre.mono { white-space: pre-wrap; word-break: break-word; font-size: 0.78rem; background: #1a1a20; padding: 12px; border-radius: 8px; border: 1px solid #2a2a32; max-height: 360px; overflow: auto; }
+    pre.mono { white-space: pre-wrap; word-break: break-word; font-size: 0.78rem; background: #1a1a20; padding: 12px; border-radius: 8px; border: 1px solid #2a2a32; max-height: min(70vh, 520px); overflow: auto; }
     pre.out { margin-top: 14px; padding: 12px; border-radius: 8px; font-size: 0.82rem; white-space: pre-wrap; }
     pre.out.ok { background: #14532d; border: 1px solid #22c55e; }
     pre.out.bad { background: #450a0a; border: 1px solid #f87171; }

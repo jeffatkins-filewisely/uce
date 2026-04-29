@@ -1681,6 +1681,13 @@ async fn uce_ccc_capture_test(
 }
 
 #[tauri::command]
+fn uce_ccc_run_autodiscovery(
+    app: AppHandle,
+) -> Result<services::ccc_autodiscovery::CccAutodiscoverySummary, String> {
+    Ok(services::ccc_autodiscovery::run_for_app(&app, "manual"))
+}
+
+#[tauri::command]
 fn uce_ccc_last_files_seen() -> Vec<String> {
     services::ccc_capture_diag::last_ccc_files_seen()
 }
@@ -2024,6 +2031,15 @@ pub fn run() {
                     eprintln!("[UCE] deep_link register_all: {}", e);
                 }
             }
+            {
+                let h = app.handle().clone();
+                if let Err(e) = pdf_watch_config::ensure_default_pdf_watch_config_file(&h) {
+                    eprintln!("[UCE] capture init: ensure_default_pdf_watch_config_file: {e}");
+                }
+                if let Err(e) = memory_store::ensure_candidate_log_bootstrapped(&h) {
+                    eprintln!("[UCE] capture init: ensure_candidate_log_bootstrapped: {e}");
+                }
+            }
             uce_try_build_tray(app.handle());
 
             if let Some(window) = app.get_webview_window("main") {
@@ -2080,7 +2096,12 @@ pub fn run() {
             #[cfg(windows)]
             {
                 let h = app.handle().clone();
-                services::print_watcher::start_print_watcher(h.clone());
+                let _ = services::ccc_autodiscovery::run_for_app(&h, "startup");
+                eprintln!("UCE_PRINT_WATCHER_STARTING");
+                if let Err(e) = services::print_watcher::start_print_watcher(h.clone()) {
+                    eprintln!("UCE_CAPTURE_PIPELINE_FAILED_TO_START phase=thread_spawn error={e}");
+                    services::capture_pipeline_status::set_failed(format!("thread_spawn: {e}"));
+                }
                 services::office_intercept::spawn_office_winword_telemetry(h);
                 services::flight_recorder::spawn();
                 services::processed_retention::spawn();
@@ -2137,6 +2158,7 @@ pub fn run() {
             connection_diagnostics::uce_test_ingest_connection,
             connection_diagnostics::uce_copy_diagnostic_report,
             uce_ccc_capture_test,
+            uce_ccc_run_autodiscovery,
             uce_ccc_last_files_seen
         ])
         .build(tauri::generate_context!())

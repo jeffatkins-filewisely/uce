@@ -107,6 +107,9 @@ pub struct PdfWatchConfig {
     /// Minimum file size in bytes for files under general paths (default 512). PDFs also use `min_pdf_bytes` as a floor.
     #[serde(default)]
     pub general_min_file_bytes: Option<u64>,
+    /// Machine-learned CCC export/temp folders from [`crate::services::ccc_autodiscovery`].
+    #[serde(default)]
+    pub auto_discovered_ccc_dirs: Vec<String>,
 }
 
 impl Default for PdfWatchConfig {
@@ -125,6 +128,19 @@ impl Default for PdfWatchConfig {
             office_winword_send_prompt: false,
             general_document_capture_enabled: default_general_document_capture_enabled(),
             general_min_file_bytes: None,
+            auto_discovered_ccc_dirs: Vec::new(),
+        }
+    }
+}
+
+fn append_auto_discovered_ccc_watch_roots(
+    cfg: &PdfWatchConfig,
+    out: &mut Vec<(PathBuf, &'static str)>,
+) {
+    for s in &cfg.auto_discovered_ccc_dirs {
+        let p = PathBuf::from(s.trim());
+        if !p.as_os_str().is_empty() {
+            out.push((p, "ccc_autodiscovered"));
         }
     }
 }
@@ -157,6 +173,22 @@ pub fn save_pdf_watch_config(app: &tauri::AppHandle, cfg: &PdfWatchConfig) -> Re
     let path = config_path(app)?;
     let raw = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
     std::fs::write(path, raw).map_err(|e| e.to_string())
+}
+
+/// Ensures `uce-pdf-watch.json` exists with defaults so support can verify watch settings on disk.
+/// Returns `Ok(true)` when the file was created.
+pub fn ensure_default_pdf_watch_config_file(app: &tauri::AppHandle) -> Result<bool, String> {
+    let path = config_path(app)?;
+    if path.exists() {
+        return Ok(false);
+    }
+    let cfg = PdfWatchConfig::default();
+    save_pdf_watch_config(app, &cfg)?;
+    eprintln!(
+        "UCE_PDF_WATCH_CONFIG_CREATED path={}",
+        path.display()
+    );
+    Ok(true)
 }
 
 /// Partial document merged at runtime with per-user [`PdfWatchConfig`] (see module docs).
@@ -291,6 +323,8 @@ pub fn office_intercept_watch_roots(app: &tauri::AppHandle) -> Vec<(PathBuf, &'s
     let mut out = vec![(primary.clone(), primary_rule)];
 
     if print_config::ccc_temp_watch_only() {
+        let cfg = load_pdf_watch_config(app);
+        append_auto_discovered_ccc_watch_roots(&cfg, &mut out);
         return dedupe_office_watch_roots(out);
     }
 
@@ -330,6 +364,8 @@ pub fn office_intercept_watch_roots(app: &tauri::AppHandle) -> Vec<(PathBuf, &'s
             out.push((p, "office_intercept_extra"));
         }
     }
+
+    append_auto_discovered_ccc_watch_roots(&cfg, &mut out);
 
     dedupe_office_watch_roots(out)
 }

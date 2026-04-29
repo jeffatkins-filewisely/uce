@@ -9,6 +9,11 @@ use std::time::Duration;
 use tauri::AppHandle;
 use tauri::Manager;
 
+use crate::config::print_config;
+use crate::pdf_watch_config;
+use crate::services::capture_pipeline_status;
+use crate::services::ccc_autodiscovery;
+use crate::services::ccc_capture_diag;
 use crate::tenant_config;
 use crate::uce_webview_url;
 
@@ -135,6 +140,24 @@ pub fn uce_record_heartbeat_outcome(
     Ok(())
 }
 
+fn url_overlay_classification(url: &str) -> &'static str {
+    let lower = url.to_ascii_lowercase();
+    if lower.starts_with("chrome-error:") || lower.contains("chromewebdata") {
+        return "chrome_error_page";
+    }
+    if matches!(
+        lower.trim(),
+        "about:blank" | "about:srcdoc"
+    ) || lower.starts_with("about:blank?")
+    {
+        return "about_blank";
+    }
+    if uce_webview_url::url_looks_like_loaded_app_ui(url) {
+        return "app_ui";
+    }
+    "other"
+}
+
 fn main_overlay_snapshot(app: &AppHandle) -> serde_json::Value {
     let (tx, rx) = mpsc::channel::<serde_json::Value>();
     let app_c = app.clone();
@@ -144,20 +167,96 @@ fn main_overlay_snapshot(app: &AppHandle) -> serde_json::Value {
                 Ok(u) => {
                     let s = u.as_str();
                     let loaded = uce_webview_url::url_looks_like_loaded_app_ui(s);
-                    json!({ "loaded": loaded, "url": s })
+                    let classification = url_overlay_classification(s);
+                    json!({
+                        "loaded": loaded,
+                        "url": s,
+                        "classification": classification,
+                    })
                 }
-                Err(e) => json!({ "loaded": false, "url": format!("url() error: {e}") }),
+                Err(e) => json!({ "loaded": false, "url": format!("url() error: {e}"), "classification": "error" }),
             },
-            None => json!({ "loaded": false, "url": "<no main window>" }),
+            None => json!({ "loaded": false, "url": "<no main window>", "classification": "no_window" }),
         };
         let _ = tx.send(v);
     }) {
-        return json!({ "loaded": false, "url": format!("run_on_main_thread: {e}") });
+        return json!({ "loaded": false, "url": format!("run_on_main_thread: {e}"), "classification": "error" });
     }
     match rx.recv_timeout(Duration::from_secs(5)) {
         Ok(v) => v,
-        Err(e) => json!({ "loaded": false, "url": format!("overlay snapshot timeout: {e}") }),
+        Err(e) => json!({ "loaded": false, "url": format!("overlay snapshot timeout: {e}"), "classification": "error" }),
     }
+}
+
+fn capture_pipeline_snapshot(app: &AppHandle) -> serde_json::Value {
+    let pw = pdf_watch_config::load_pdf_watch_config(app);
+    let roots = pdf_watch_config::office_intercept_watch_roots(app);
+    let paired: Vec<serde_json::Value> = roots
+        .iter()
+        .take(48)
+        .map(|(p, rule)| {
+            json!({
+                "path": p.to_string_lossy(),
+                "rule": rule,
+            })
+        })
+        .collect();
+
+    let pdf_watch_path = app
+        .path()
+        .app_data_dir()
+        .map(|d| d.join("uce-pdf-watch.json").to_string_lossy().into_owned())
+        .unwrap_or_else(|_| "(unknown)".to_string());
+
+    let ccc_seen = ccc_capture_diag::last_ccc_files_seen();
+    let last_20_ccc: Vec<String> = ccc_seen
+        .iter()
+        .rev()
+        .take(20)
+        .rev()
+        .cloned()
+        .collect();
+    let ccc_temp = print_config::ccc_temp_watch_path();
+
+    let mut cap = json!({
+        "pdf_watch_json_path": pdf_watch_path,
+        "capture_pipeline_status": capture_pipeline_status::status_label(),
+        "capture_pipeline_failure_detail": capture_pipeline_status::failure_reason(),
+        "watcher_platform": if cfg!(windows) { "windows" } else { "unsupported" },
+        "ccc_temp_watch_path": ccc_temp.to_string_lossy(),
+        "watched_incoming_root": print_config::watched_incoming_root().to_string_lossy(),
+        "ccc_temp_watch_only_env": print_config::ccc_temp_watch_only(),
+        "auto_discovered_ccc_dirs": pw.auto_discovered_ccc_dirs,
+        "general_document_capture_enabled": pw.general_document_capture_enabled,
+        "general_min_file_bytes": pw.general_min_file_bytes,
+        "min_pdf_bytes_config": pw.min_pdf_bytes,
+        "extra_dirs_count": pw.extra_dirs.len(),
+        "office_intercept_extra_dirs_count": pw.office_intercept_extra_dirs.len(),
+        "watch_root_count": roots.len(),
+        "watch_roots": paired,
+        "last_files_seen_ring_buffer": ccc_seen,
+        "last_20_ccc_files_seen": last_20_ccc,
+        "trace_hints": [
+            "Connection OK but no captures: confirm PDFs land under a watched folder — CCC Temp\\\\CCC, FileWisely Incoming, or (if enabled) Documents/Downloads.",
+            "Trace capture: stderr lines UCE_WATCH_ATTACHED / UCE_FILE_DETECTED_RAW / UCE_PIPELINE_CONTEXT / UCE_FILE_REJECTED — run UCE from Command Prompt.",
+            "Search stderr for UCE_GENERAL_FILE_* / UCE_CCC_* — run UCE from Command Prompt to see lines.",
+            "Printer popup: FileWisely Printer missing — install/rename printer, or set localStorage uce_suppress_printer_severe_modal=1 (dev only).",
+            "Toast every ~25s: health attention — expand Connection Doctor status (capture_pipeline) for printer/upload stale.",
+            "WebView 'Could not load': classification chrome_error_page in diagnostics — start Vite (dev) or reinstall (prod)."
+        ],
+    });
+
+    if let (
+        serde_json::Value::Object(ref mut m),
+        serde_json::Value::Object(extra),
+    ) = (&mut cap, ccc_autodiscovery::diagnostics_snapshot())
+    {
+        for (k, v) in extra {
+            m.insert(k, v);
+        }
+    }
+
+    cap
 }
 
 #[tauri::command]
@@ -215,6 +314,7 @@ pub fn uce_get_connection_diagnostics(app: AppHandle) -> Result<serde_json::Valu
         "last_heartbeat_http_status": outcome.http_status,
         "last_heartbeat_message": outcome.message,
         "main_overlay_loaded": main_overlay,
+        "capture_pipeline": capture_pipeline_snapshot(&app),
     }))
 }
 
@@ -366,6 +466,177 @@ fn finish_test(app: &AppHandle, r: &ConnectionTestResult) {
     let _ = write_outcome(app, &rec);
 }
 
+fn format_capture_pipeline_plain(cp: &serde_json::Value) -> String {
+    let gstr = |k: &str| -> String {
+        cp.get(k)
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    let gbool = |k: &str| -> String {
+        cp.get(k)
+            .and_then(|x| x.as_bool())
+            .map(|b| b.to_string())
+            .unwrap_or_else(|| "(missing)".to_string())
+    };
+    let detail = cp
+        .get("capture_pipeline_failure_detail")
+        .and_then(|x| x.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("(none)");
+    let mut out = String::new();
+    out.push_str("capture_pipeline_status: ");
+    out.push_str(&gstr("capture_pipeline_status"));
+    out.push('\n');
+    out.push_str("capture_pipeline_failure_detail: ");
+    out.push_str(detail);
+    out.push('\n');
+    out.push_str("watcher_platform: ");
+    out.push_str(&gstr("watcher_platform"));
+    out.push('\n');
+    out.push_str("pdf_watch_json_path: ");
+    out.push_str(&gstr("pdf_watch_json_path"));
+    out.push('\n');
+    out.push_str("ccc_temp_watch_path: ");
+    out.push_str(&gstr("ccc_temp_watch_path"));
+    out.push('\n');
+    out.push_str("watched_incoming_root (FW vs CCC temp): ");
+    out.push_str(&gstr("watched_incoming_root"));
+    out.push('\n');
+    out.push_str("ccc_temp_watch_only_env (UCE_CCC_TEMP_WATCH_ONLY): ");
+    out.push_str(&gbool("ccc_temp_watch_only_env"));
+    out.push('\n');
+    out.push_str("general_document_capture_enabled: ");
+    out.push_str(&gbool("general_document_capture_enabled"));
+    out.push('\n');
+    out.push_str("auto_discovered_ccc_dirs (persisted in uce-pdf-watch.json):\n");
+    if let Some(arr) = cp.get("auto_discovered_ccc_dirs").and_then(|x| x.as_array()) {
+        if arr.is_empty() {
+            out.push_str("  (none)\n");
+        }
+        for x in arr {
+            if let Some(s) = x.as_str() {
+                out.push_str(&format!("  - {}\n", s));
+            }
+        }
+    } else {
+        out.push_str("  (missing)\n");
+    }
+    if let Some(ms) = cp
+        .get("ccc_autodiscovery_last_run_unix_ms")
+        .and_then(|x| x.as_i64())
+    {
+        out.push_str(&format!("ccc_autodiscovery_last_run_unix_ms: {}\n", ms));
+    } else {
+        out.push_str("ccc_autodiscovery_last_run_unix_ms: (never)\n");
+    }
+    out.push_str("ccc_autodiscovery_confidence: ");
+    out.push_str(&format!(
+        "{:.3}\n",
+        cp.get("ccc_autodiscovery_confidence")
+            .and_then(|x| x.as_f64())
+            .unwrap_or(0.0)
+    ));
+    out.push_str("ccc_autodiscovery_candidates (sample):\n");
+    if let Some(arr) = cp
+        .get("ccc_autodiscovery_candidates")
+        .and_then(|x| x.as_array())
+    {
+        if arr.is_empty() {
+            out.push_str("  (none)\n");
+        }
+        for x in arr.iter().take(24) {
+            if let Some(s) = x.as_str() {
+                out.push_str(&format!("  - {}\n", s));
+            }
+        }
+        if arr.len() > 24 {
+            out.push_str(&format!("  … {} more\n", arr.len() - 24));
+        }
+    } else {
+        out.push_str("  (missing)\n");
+    }
+    out.push_str("watch_root_count: ");
+    if let Some(n) = cp.get("watch_root_count").and_then(|x| x.as_u64()) {
+        out.push_str(&n.to_string());
+    } else {
+        out.push_str("(missing)");
+    }
+    out.push('\n');
+
+    out.push_str("watch_roots:\n");
+    if let Some(arr) = cp.get("watch_roots").and_then(|x| x.as_array()) {
+        if arr.is_empty() {
+            out.push_str("  (none listed)\n");
+        }
+        for (i, item) in arr.iter().enumerate().take(48) {
+            let path = item
+                .get("path")
+                .and_then(|x| x.as_str())
+                .unwrap_or("?");
+            let rule = item
+                .get("rule")
+                .and_then(|x| x.as_str())
+                .unwrap_or("?");
+            out.push_str(&format!("  [{}] {}  (rule={})\n", i + 1, path, rule));
+        }
+        if arr.len() > 48 {
+            out.push_str(&format!(
+                "  … {} more roots omitted (see full capture_pipeline JSON)\n",
+                arr.len() - 48
+            ));
+        }
+    } else {
+        out.push_str("  (missing)\n");
+    }
+
+    out.push_str("last_files_seen_ring_buffer (CCC-related, chronological):\n");
+    if let Some(arr) = cp.get("last_files_seen_ring_buffer").and_then(|x| x.as_array()) {
+        if arr.is_empty() {
+            out.push_str("  (empty — no CCC-related files recorded yet this session)\n");
+        }
+        for x in arr {
+            if let Some(s) = x.as_str() {
+                out.push_str(&format!("  - {}\n", s));
+            }
+        }
+    } else {
+        out.push_str("  (missing)\n");
+    }
+
+    out.push_str("last_20_ccc_files_seen:\n");
+    if let Some(arr) = cp.get("last_20_ccc_files_seen").and_then(|x| x.as_array()) {
+        if arr.is_empty() {
+            out.push_str("  (empty)\n");
+        }
+        for x in arr {
+            if let Some(s) = x.as_str() {
+                out.push_str(&format!("  - {}\n", s));
+            }
+        }
+    } else {
+        out.push_str("  (missing)\n");
+    }
+
+    out.push_str("trace_hints:\n");
+    if let Some(arr) = cp.get("trace_hints").and_then(|x| x.as_array()) {
+        for x in arr {
+            if let Some(s) = x.as_str() {
+                out.push_str(&format!("  - {}\n", s));
+            }
+        }
+    } else {
+        out.push_str("  (missing)\n");
+    }
+
+    out.push_str("\n--- capture_pipeline (full JSON) ---\n");
+    out.push_str(
+        &serde_json::to_string_pretty(cp).unwrap_or_else(|_| "{}".to_string()),
+    );
+    out.push('\n');
+    out
+}
+
 #[tauri::command]
 pub fn uce_copy_diagnostic_report(app: AppHandle) -> Result<String, String> {
     let v = uce_get_connection_diagnostics(app.clone())?;
@@ -386,9 +657,18 @@ pub fn uce_copy_diagnostic_report(app: AppHandle) -> Result<String, String> {
         .and_then(|m| m.get("url"))
         .and_then(|x| x.as_str())
         .unwrap_or("");
+    let main_class = v
+        .get("main_overlay_loaded")
+        .and_then(|m| m.get("classification"))
+        .and_then(|x| x.as_str())
+        .unwrap_or("");
+    let cp = v.get("capture_pipeline").cloned().unwrap_or(json!({}));
+    let capture_plain = format_capture_pipeline_plain(&cp);
 
     let lines = format!(
-        "UCE Connection Diagnostic Report\n\
+        "UCE Connection + Capture Diagnostic Report\n\
+\n\
+=== Connection health ===\n\
 UCE version: {}\n\
 Machine: {}\n\
 OS: {}\n\
@@ -405,8 +685,11 @@ Last HTTP status: {:?}\n\
 Last error message: {}\n\
 Main overlay loaded: {}\n\
 Main URL snapshot: {}\n\
+Main URL classification: {}\n\
 \n\
---- Recent connection log (tail) ---\n\
+=== Capture pipeline health (watcher + CCC) ===\n\
+{}\n\
+=== Recent connection log (tail) ===\n\
 {}\n",
         v["uce_version"].as_str().unwrap_or(""),
         v["machine_name"].as_str().unwrap_or(""),
@@ -432,6 +715,8 @@ Main URL snapshot: {}\n\
         v["last_heartbeat_message"].as_str().unwrap_or(""),
         main_loaded,
         main_url,
+        main_class,
+        capture_plain,
         recent
     );
 

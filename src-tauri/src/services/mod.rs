@@ -1,3 +1,5 @@
+pub mod capture_pipeline_status;
+pub mod ccc_autodiscovery;
 pub mod ccc_batch;
 pub mod ccc_capture_diag;
 pub mod ccc_cr_word_autoclose;

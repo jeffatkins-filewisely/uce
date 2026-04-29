@@ -34,7 +34,7 @@ pub fn is_ccc_related_path(path: &Path) -> bool {
 fn should_record_from_rule(matched_rule: &str) -> bool {
     matches!(
         matched_rule,
-        "ccc_temp" | "ccc_path" | "ccc_workfiles" | "ccc_programdata"
+        "ccc_temp" | "ccc_path" | "ccc_workfiles" | "ccc_programdata" | "ccc_autodiscovered"
     )
 }
 

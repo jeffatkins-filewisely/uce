@@ -7125,9 +7125,13 @@ async function uceRuntimePrinterCheck() {
 
 // Dev helper: call window.__uceDebugState() in DevTools.
 window.__uceDebugState = async () => invoke("get_debug_state");
+/** Full connection + capture diagnostics (same JSON as Connection Doctor → status). */
+window.__uceDiagnostics = async () => invoke("uce_get_connection_diagnostics");
 /** CCC capture test: polls CCC temp / C:\\CCC roots for a **new** PDF (default 60s). */
 window.__uceCccCaptureTest = async (timeoutSecs = 60) =>
   invoke("uce_ccc_capture_test", { timeoutSecs });
+/** Scan typical CCC locations; merges into uce-pdf-watch.json `auto_discovered_ccc_dirs`. */
+window.__uceCccRunAutodiscovery = () => invoke("uce_ccc_run_autodiscovery");
 window.__uceCccLastFilesSeen = () => invoke("uce_ccc_last_files_seen");
 window.__uceDetectContext = () => {
   const raw = detectUceContext(lastPolledContext, getUceRecognitionSignals());

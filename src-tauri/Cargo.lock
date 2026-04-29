@@ -4863,7 +4863,7 @@ dependencies = [
 
 [[package]]
 name = "tauri-app"
-version = "0.1.36"
+version = "0.1.37"
 dependencies = [
  "active-win-pos-rs",
  "arboard",

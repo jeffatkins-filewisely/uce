@@ -5,6 +5,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -16,6 +17,7 @@ use tauri::Emitter;
 
 use crate::config::print_config::{self, FW_PRINTER_DISPLAY_NAME};
 use crate::pdf_watch_config;
+use crate::services::capture_pipeline_status;
 use crate::services::ccc_batch;
 use crate::services::converter;
 use crate::services::foreground_telemetry;
@@ -214,33 +216,64 @@ fn log_general_pdf_captured_if_needed(matched_rule: &str, pdf_path: &str) {
     }
 }
 
-fn handle_path(
-    app: &tauri::AppHandle,
-    path: std::path::PathBuf,
-    roots: &[(PathBuf, &'static str)],
-) {
+fn handle_path(app: &tauri::AppHandle, path: std::path::PathBuf) {
+    eprintln!(
+        "UCE_FILE_DETECTED_RAW path={} is_file={}",
+        path.display(),
+        path.is_file()
+    );
+
     if print_config::ccc_temp_watch_only() {
-        if path.is_file() && !converter::path_is_under_uce_staging(&path) {
-            foreground_telemetry::spawn_foreground_debug_poll_after_detection();
-            ccc_batch::handle_ccc_temp_file(app, path);
+        if !path.is_file() {
+            eprintln!(
+                "UCE_FILE_REJECTED path={} reason=not_a_file_ccc_temp_mode",
+                path.display()
+            );
+            return;
         }
+        if converter::path_is_under_uce_staging(&path) {
+            eprintln!(
+                "UCE_FILE_REJECTED path={} reason=uce_staging_internal",
+                path.display()
+            );
+            return;
+        }
+        foreground_telemetry::spawn_foreground_debug_poll_after_detection();
+        ccc_batch::handle_ccc_temp_file(app, path);
         return;
     }
+
+    let roots = pdf_watch_config::office_intercept_watch_roots(app);
 
     let cfg = pdf_watch_config::load_pdf_watch_config(app);
 
     let Some(kind) = extension_kind(&path) else {
+        eprintln!(
+            "UCE_FILE_REJECTED path={} reason=no_pdf_office_extension",
+            path.display()
+        );
         return;
     };
 
-    let matched_rule = pdf_watch_config::resolve_office_source_rule(&path, roots);
+    let matched_rule = pdf_watch_config::resolve_office_source_rule(&path, roots.as_slice());
     let is_general = pdf_watch_config::is_general_capture_rule(matched_rule);
+
+    eprintln!(
+        "UCE_PIPELINE_CONTEXT path={} kind={} matched_rule={}",
+        path.display(),
+        kind,
+        matched_rule
+    );
 
     if is_general {
         eprintln!("UCE_GENERAL_FILE_SEEN path={}", path.display());
         if pdf_watch_config::should_ignore_general_document_path(&path) {
             eprintln!(
                 "UCE_GENERAL_FILE_IGNORED path={} reason=ignore_pattern",
+                path.display()
+            );
+            eprintln!(
+                "UCE_FILE_REJECTED path={} reason=ignore_pattern_general",
                 path.display()
             );
             return;
@@ -268,6 +301,12 @@ fn handle_path(
                             path.display(),
                             m.len()
                         );
+                        eprintln!(
+                            "UCE_FILE_REJECTED path={} reason=too_small bytes={} min_b={}",
+                            path.display(),
+                            m.len(),
+                            min_b
+                        );
                         return;
                     }
                 }
@@ -275,6 +314,10 @@ fn handle_path(
 
             let path = incoming_unique_rename::unique_rename_incoming_pdf_if_needed(path);
             if !path.is_file() {
+                eprintln!(
+                    "UCE_FILE_REJECTED path={} reason=vanished_after_incoming_rename",
+                    path.display()
+                );
                 return;
             }
             if !wait_for_pdf_file_stable(&path) {
@@ -288,6 +331,10 @@ fn handle_path(
                     "[UCE] File stable: FAILED (still writing or locked): {}",
                     path.display()
                 );
+                eprintln!(
+                    "UCE_FILE_REJECTED path={} reason=not_stable_or_locked",
+                    path.display()
+                );
                 return;
             }
             eprintln!("[UCE] File stable: {}", path.display());
@@ -297,6 +344,10 @@ fn handle_path(
         }
         "office" => {
             if !path.is_file() {
+                eprintln!(
+                    "UCE_FILE_REJECTED path={} reason=not_a_file_office_branch",
+                    path.display()
+                );
                 return;
             }
 
@@ -309,6 +360,12 @@ fn handle_path(
                             path.display(),
                             m.len()
                         );
+                        eprintln!(
+                            "UCE_FILE_REJECTED path={} reason=too_small_office bytes={} min_b={}",
+                            path.display(),
+                            m.len(),
+                            min_b
+                        );
                         return;
                     }
                 }
@@ -316,6 +373,10 @@ fn handle_path(
 
             let path = incoming_unique_rename::unique_rename_incoming_office_if_needed(path);
             if !path.is_file() {
+                eprintln!(
+                    "UCE_FILE_REJECTED path={} reason=vanished_after_office_rename",
+                    path.display()
+                );
                 return;
             }
             ccc_capture_diag::record_ccc_file_seen(&path, Some(matched_rule));
@@ -331,11 +392,13 @@ fn handle_path(
 
 /// Spawn a background thread that debounce-watches Office/PDF roots.
 #[cfg(windows)]
-pub fn spawn_print_watcher(app: tauri::AppHandle) {
+pub fn spawn_print_watcher(app: tauri::AppHandle) -> Result<(), String> {
     if print_config::ccc_temp_watch_only() {
         ccc_batch::init_ccc_batch_subsystems(&app);
     }
-    thread::spawn(move || {
+    thread::Builder::new()
+        .name("uce-print-watcher".into())
+        .spawn(move || {
         let app = app;
         let roots_vec = pdf_watch_config::office_intercept_watch_roots(&app);
         let roots_arc = Arc::new(roots_vec);
@@ -362,13 +425,11 @@ pub fn spawn_print_watcher(app: tauri::AppHandle) {
         };
 
         let app_debounce = app.clone();
-        let roots_debounce = Arc::clone(&roots_arc);
         let mut debouncer = match new_debouncer(Duration::from_millis(debounce_ms), move |res: DebounceEventResult| {
-            let roots = roots_debounce.as_slice();
             match res {
                 Ok(events) => {
                     for ev in events {
-                        handle_path(&app_debounce, ev.path, roots);
+                        handle_path(&app_debounce, ev.path);
                     }
                 }
                 Err(e) => eprintln!("UCE print watcher: {e}"),
@@ -376,20 +437,25 @@ pub fn spawn_print_watcher(app: tauri::AppHandle) {
         }) {
             Ok(d) => d,
             Err(e) => {
+                eprintln!("UCE_CAPTURE_PIPELINE_FAILED_TO_START phase=debouncer error={e}");
                 eprintln!("UCE print watcher: debouncer failed: {e}");
+                capture_pipeline_status::set_failed(format!("debouncer: {e}"));
                 return;
             }
         };
 
+        eprintln!("UCE_PRINT_WATCHER_STARTED");
+        capture_pipeline_status::set_running();
+
         let ccc_temp = print_config::ccc_temp_watch_path();
-        for (root, _rule) in roots_arc.iter() {
+        for (root, rule) in roots_arc.iter() {
             let is_ccc_appdata_temp = root.to_string_lossy().to_lowercase()
                 == ccc_temp.to_string_lossy().to_lowercase()
                 || pdf_watch_config::paths_canon_equal(root, &ccc_temp);
             let existed_before = root.exists();
             if let Err(e) = fs::create_dir_all(root) {
                 eprintln!(
-                    "UCE print watcher: could not ensure watch dir {}: {}",
+                    "UCE watch prep failed: could not ensure watch dir {}: {}",
                     root.display(),
                     e
                 );
@@ -413,6 +479,11 @@ pub fn spawn_print_watcher(app: tauri::AppHandle) {
                 .watch(root.as_path(), RecursiveMode::Recursive)
             {
                 Ok(()) => {
+                    eprintln!(
+                        "UCE_WATCH_ATTACHED path={} OFFICE_SOURCE_MATCHED_RULE={}",
+                        root.display(),
+                        rule
+                    );
                     if is_ccc_appdata_temp {
                         eprintln!(
                             "UCE_CCC_TEMP_WATCH_ROOT_CONFIGURED path={}",
@@ -421,6 +492,11 @@ pub fn spawn_print_watcher(app: tauri::AppHandle) {
                     }
                 }
                 Err(e) => {
+                    eprintln!(
+                        "UCE_WATCH_ATTACH_FAILED path={} err={}",
+                        root.display(),
+                        e
+                    );
                     eprintln!(
                         "UCE print watcher: watch failed for {}: {e}",
                         root.display()
@@ -440,20 +516,80 @@ pub fn spawn_print_watcher(app: tauri::AppHandle) {
             }
         );
 
-        loop {
-            thread::sleep(Duration::from_secs(3600));
+        fn canon_watch_key(p: &Path) -> String {
+            fs::canonicalize(p)
+                .unwrap_or_else(|_| p.to_path_buf())
+                .to_string_lossy()
+                .to_lowercase()
         }
-    });
+
+        let mut watched_keys: HashSet<String> = roots_arc
+            .iter()
+            .map(|(p, _)| canon_watch_key(p))
+            .collect();
+
+        let mut ticks: u32 = 0;
+        loop {
+            thread::sleep(Duration::from_secs(15));
+            ticks = ticks.wrapping_add(1);
+            if ticks % 4 != 0 {
+                continue;
+            }
+            let fresh = pdf_watch_config::office_intercept_watch_roots(&app);
+            for (root, rule) in fresh {
+                let key = canon_watch_key(&root);
+                if watched_keys.contains(&key) {
+                    continue;
+                }
+                let _ = fs::create_dir_all(&root);
+                match debouncer
+                    .watcher()
+                    .watch(root.as_path(), RecursiveMode::Recursive)
+                {
+                    Ok(()) => {
+                        watched_keys.insert(key);
+                        eprintln!(
+                            "UCE_WATCH_ATTACHED path={} OFFICE_SOURCE_MATCHED_RULE={}",
+                            root.display(),
+                            rule
+                        );
+                        eprintln!(
+                            "UCE_WATCH_ROOT_REFRESH_ADDED path={} OFFICE_SOURCE_MATCHED_RULE={}",
+                            root.display(),
+                            rule
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "UCE_WATCH_ATTACH_FAILED path={} err={}",
+                            root.display(),
+                            e
+                        );
+                        eprintln!(
+                            "UCE_WATCH_ROOT_REFRESH watch failed {}: {e}",
+                            root.display()
+                        );
+                    }
+                }
+            }
+        }
+    })
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[cfg(not(windows))]
-pub fn spawn_print_watcher(_app: tauri::AppHandle) {}
+pub fn spawn_print_watcher(_app: tauri::AppHandle) -> Result<(), String> {
+    Ok(())
+}
 
 /// Alias for [`spawn_print_watcher`] — matches FileWisely “Desktop OS” deployment docs.
 #[cfg(windows)]
-pub fn start_print_watcher(app: tauri::AppHandle) {
-    spawn_print_watcher(app);
+pub fn start_print_watcher(app: tauri::AppHandle) -> Result<(), String> {
+    spawn_print_watcher(app)
 }
 
 #[cfg(not(windows))]
-pub fn start_print_watcher(_app: tauri::AppHandle) {}
+pub fn start_print_watcher(_app: tauri::AppHandle) -> Result<(), String> {
+    Ok(())
+}

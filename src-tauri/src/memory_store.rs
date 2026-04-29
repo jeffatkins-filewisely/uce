@@ -64,6 +64,20 @@ pub fn append_candidate_log(app: &tauri::AppHandle, line: &str) -> Result<(), St
     writeln!(file, "{line}").map_err(|e| e.to_string())
 }
 
+/// Creates `uce-candidates.log` with a bootstrap line if missing (candidate logging is otherwise lazy).
+pub fn ensure_candidate_log_bootstrapped(app: &tauri::AppHandle) -> Result<(), String> {
+    let path = candidate_log_file(app)?;
+    if path.exists() {
+        return Ok(());
+    }
+    append_candidate_log(app, r#"{"uce":"UCE_CANDIDATE_LOG_INITIALIZED"}"#)?;
+    eprintln!(
+        "UCE_CANDIDATE_LOG_INITIALIZED path={}",
+        path.display()
+    );
+    Ok(())
+}
+
 pub fn load_custom_rules(app: &tauri::AppHandle) -> Result<Vec<Rule>, String> {
     let path = custom_rules_file(app)?;
     if !path.exists() {
