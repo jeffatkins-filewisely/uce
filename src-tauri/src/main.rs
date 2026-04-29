@@ -1299,6 +1299,47 @@ fn list_pdf_metas_since(app: tauri::AppHandle, since_unix_ms: i64) -> Vec<PdfMet
     collect_pdf_metas_since(&app, since_unix_ms)
 }
 
+/// Single-file meta for paths emitted on `uce-incoming-file` (bypasses `list_pdf_metas_since` mtime/scan gaps).
+#[tauri::command]
+fn uce_pdf_meta_for_path(app: tauri::AppHandle, path: String) -> Result<Option<PdfMetaResponse>, String> {
+    let p = PathBuf::from(path.trim());
+    if !p.is_file() {
+        return Ok(None);
+    }
+    let cfg = pdf_watch_config::load_pdf_watch_config(&app);
+    let min_b = pdf_watch_config::min_pdf_bytes(&cfg);
+    let meta = fs::metadata(&p).map_err(|e| e.to_string())?;
+    if meta.len() <= min_b {
+        return Ok(None);
+    }
+    let ts = file_time_unix_ms(&p).ok_or_else(|| "mtime unavailable".to_string())?;
+    Ok(Some(PdfMetaResponse {
+        file_path: p.to_string_lossy().to_string(),
+        modified_unix_ms: ts,
+        file_size: meta.len(),
+    }))
+}
+
+#[tauri::command]
+fn uce_js_upload_listener_ready() {
+    services::js_runtime_diag::set_upload_listener_ready();
+}
+
+#[tauri::command]
+fn uce_js_incoming_pdf_event(path: String) {
+    services::js_runtime_diag::record_incoming_pdf_event(path);
+}
+
+#[tauri::command]
+fn uce_js_report_upload_skip(reason: String) {
+    services::js_runtime_diag::record_upload_skip(reason);
+}
+
+#[tauri::command]
+fn uce_ui_popup_trace(kind: String, source: String, message: Option<String>) {
+    services::js_runtime_diag::record_popup(kind, source, message);
+}
+
 /// All `fw_*.pdf` in FileWisely Incoming (upload rescue / trace). Does not run Word→PDF conversion.
 fn collect_fw_pdf_metas_in_filewisely_incoming(app: &tauri::AppHandle) -> Vec<PdfMetaResponse> {
     let dir = print_config::watched_incoming_root();
@@ -2167,6 +2208,11 @@ pub fn run() {
             wait_for_recent_pdf,
             get_newest_pdf_meta,
             list_pdf_metas_since,
+            uce_pdf_meta_for_path,
+            uce_js_upload_listener_ready,
+            uce_js_incoming_pdf_event,
+            uce_js_report_upload_skip,
+            uce_ui_popup_trace,
             list_fw_pdf_metas_in_filewisely_incoming,
             get_pdf_watch_config,
             save_pdf_watch_config,

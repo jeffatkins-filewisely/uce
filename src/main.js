@@ -186,6 +186,14 @@ function createDefaultFwState() {
 const fwPdfStateByPath = new Map();
 /** Paths signaled by `uce-incoming-file` (for upload source attribution). */
 const fwPathsSeenFromIncoming = new Set();
+/** Paths from last `uce-incoming-file` emit until `uce_pdf_meta_for_path` merges them (fills gaps vs `list_pdf_metas_since`). */
+const pendingIncomingPdfPathByKey = new Map();
+const MAX_PENDING_INCOMING_PDFS = 64;
+
+function reportUploadSkip(reason) {
+  console.info(`UCE_UPLOAD_SKIPPED reason=${reason}`);
+  void invoke("uce_js_report_upload_skip", { reason }).catch(() => {});
+}
 
 let fwUploadSerialPromise = Promise.resolve();
 
@@ -4895,8 +4903,22 @@ async function dismissRightPeek() {
 /** Shown at the top of in-overlay success/info toasts (not the Windows printer driver balloon). */
 const TOAST_BRAND = "UCE";
 
+function traceUceUiPopup(kind, source, message) {
+  const msg = message != null ? String(message) : "";
+  const oneLine = msg.replace(/\s+/g, " ").trim();
+  console.info(
+    `UCE_UI_POPUP_SHOWN kind=${kind} source=${source} message=${oneLine.slice(0, 500)}${oneLine.length > 500 ? "…" : ""}`
+  );
+  void invoke("uce_ui_popup_trace", {
+    kind,
+    source,
+    message: msg || null,
+  }).catch(() => {});
+}
+
 /** `durationMs <= 0` = stay open until {@link dismissToast} (e.g. Esc). */
 function showToast(text, kind = "success", durationMs = 3600) {
+  traceUceUiPopup("toast", "showToast", String(text ?? ""));
   if (toastTimer) clearTimeout(toastTimer);
   toastTimer = null;
   toastEl.replaceChildren();
@@ -5837,6 +5859,33 @@ async function checkAutoPdfUpload(source = "poll") {
     mergedList = listArr;
   }
 
+  if (pendingIncomingPdfPathByKey.size > 0) {
+    const byKey = new Map();
+    for (const m of mergedList) {
+      if (m?.file_path) byKey.set(fwKeyPath(m.file_path), m);
+    }
+    for (const [k, rawPath] of [...pendingIncomingPdfPathByKey.entries()]) {
+      try {
+        const meta = await invoke("uce_pdf_meta_for_path", {
+          path: rawPath,
+        });
+        if (meta && meta.file_path) {
+          byKey.set(fwKeyPath(meta.file_path), meta);
+          pendingIncomingPdfPathByKey.delete(k);
+        }
+      } catch (e2) {
+        console.warn("[UCE] uce_pdf_meta_for_path failed:", e2);
+      }
+    }
+    mergedList = Array.from(byKey.values());
+    mergedList.sort((a, b) => {
+      const ta = Number(a?.modified_unix_ms) || 0;
+      const tb = Number(b?.modified_unix_ms) || 0;
+      if (ta !== tb) return ta - tb;
+      return String(a?.file_path || "").localeCompare(String(b?.file_path || ""));
+    });
+  }
+
   const fwBypass =
     mergedList.length > 0 &&
     mergedList.some((m) => m?.file_path && isFwPdfPath(m.file_path));
@@ -5849,6 +5898,7 @@ async function checkAutoPdfUpload(source = "poll") {
       console.info(
         "[UCE] Auto PDF skipped: not PDF workflow context (source=" + source + ")"
       );
+      reportUploadSkip("context_not_pdf_workflow");
     }
     return;
   }
@@ -5858,6 +5908,11 @@ async function checkAutoPdfUpload(source = "poll") {
       console.info(
         `[UCE] Auto PDF list empty (source=${source}) since=${autoPdfSinceUnixMs}`
       );
+      if (pendingIncomingPdfPathByKey.size > 0) {
+        reportUploadSkip("incoming_event_but_meta_not_ready_yet");
+      } else {
+        reportUploadSkip("list_empty_after_merge");
+      }
     }
     return;
   }
@@ -5951,6 +6006,7 @@ async function checkAutoPdfUpload(source = "poll") {
         } catch (_) {
           /* optional command */
         }
+        console.info(`UCE_UPLOAD_STARTED path=${newest.file_path}`);
         const capture = await invoke("read_pdf_file", { path: newest.file_path });
         const contextSnapshot = await getUploadContextSnapshot();
         const uploadResult = await uploadCapture(
@@ -7119,6 +7175,42 @@ async function uceRuntimePrinterCheck() {
 }
 
 (async function bootstrapUce() {
+  try {
+    await listen("uce-incoming-file", (event) => {
+      let path = null;
+      try {
+        const p = event?.payload;
+        if (typeof p === "string") path = p;
+        else if (p && typeof p.path === "string") path = p.path;
+      } catch (_) {
+        /* ignore */
+      }
+      if (path) {
+        void invoke("uce_js_incoming_pdf_event", { path }).catch(() => {});
+        const pk = fwKeyPath(path);
+        pendingIncomingPdfPathByKey.set(pk, path);
+        while (pendingIncomingPdfPathByKey.size > MAX_PENDING_INCOMING_PDFS) {
+          const firstK = pendingIncomingPdfPathByKey.keys().next().value;
+          pendingIncomingPdfPathByKey.delete(firstK);
+        }
+        console.info(`UCE_JS_INCOMING_PDF_EVENT_RECEIVED path=${path}`);
+      }
+      if (path && isFwPdfPath(path)) {
+        fwPathsSeenFromIncoming.add(fwKeyPath(path));
+        recordFwPdfIncomingForContext();
+        console.info("[UCE][JS] incoming received: " + path);
+        console.info(`[UCE] trace js_incoming_event_received path=${path}`);
+        pulseCaptureCueOnce();
+      }
+      console.info("[UCE] uce-incoming-file event — scheduling debounced batch");
+      scheduleIncomingAutoPdfUpload();
+    });
+    console.info("UCE_JS_LISTENER_REGISTERED event=uce-incoming-file");
+    void invoke("uce_js_upload_listener_ready").catch(() => {});
+  } catch (e) {
+    console.warn("[UCE] uce-incoming-file listener:", e);
+  }
+
   void refreshPrinterPolicyCache();
   /* Schedule first — never block on uce_check (spooler/PowerShell can stall) or tenant dialog. */
   setTimeout(
@@ -7183,29 +7275,6 @@ async function uceRuntimePrinterCheck() {
     true
   );
   await refreshContextState();
-  try {
-    await listen("uce-incoming-file", (event) => {
-      let path = null;
-      try {
-        const p = event?.payload;
-        if (typeof p === "string") path = p;
-        else if (p && typeof p.path === "string") path = p.path;
-      } catch (_) {
-        /* ignore */
-      }
-      if (path && isFwPdfPath(path)) {
-        fwPathsSeenFromIncoming.add(fwKeyPath(path));
-        recordFwPdfIncomingForContext();
-        console.info("[UCE][JS] incoming received: " + path);
-        console.info(`[UCE] trace js_incoming_event_received path=${path}`);
-        pulseCaptureCueOnce();
-      }
-      console.info("[UCE] uce-incoming-file event — scheduling debounced batch");
-      scheduleIncomingAutoPdfUpload();
-    });
-  } catch (e) {
-    console.warn("[UCE] uce-incoming-file listener:", e);
-  }
   try {
     await listen("uce-office-print-prompt", (event) => {
       recordOfficePrintPromptForContext();

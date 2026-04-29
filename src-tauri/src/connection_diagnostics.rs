@@ -14,6 +14,7 @@ use crate::pdf_watch_config;
 use crate::services::capture_pipeline_status;
 use crate::services::ccc_autodiscovery;
 use crate::services::ccc_capture_diag;
+use crate::services::js_runtime_diag;
 use crate::tenant_config;
 use crate::uce_webview_url;
 
@@ -256,6 +257,10 @@ fn capture_pipeline_snapshot(app: &AppHandle) -> serde_json::Value {
     });
 
     if let serde_json::Value::Object(ref mut m) = cap {
+        m.insert(
+            "js_runtime".to_string(),
+            serde_json::to_value(js_runtime_diag::snapshot()).unwrap_or(json!({})),
+        );
         if let serde_json::Value::Object(pt) = crate::services::pipeline_stage_diag::snapshot_json() {
             for (k, v) in pt {
                 m.insert(k, v);

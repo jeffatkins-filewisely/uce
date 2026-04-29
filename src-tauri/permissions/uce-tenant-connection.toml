@@ -14,4 +14,9 @@ commands.allow = [
   "uce_test_ingest_connection",
   "uce_copy_diagnostic_report",
   "uce_pipeline_upload_stage",
+  "uce_pdf_meta_for_path",
+  "uce_js_upload_listener_ready",
+  "uce_js_incoming_pdf_event",
+  "uce_js_report_upload_skip",
+  "uce_ui_popup_trace",
 ]
