@@ -129,6 +129,12 @@ const FW_UPLOAD_MIN_AGE_MS = 5000;
 const FW_PARITY_LOG_MS = 10_000;
 /** After a failed upload, wait this long before rescue retries (reduces log spam). */
 const FW_FAIL_RETRY_COOLDOWN_MS = 5000;
+/**
+ * TEMP / diagnostics: on each `uce-incoming-file`, call `uploadCapture` immediately (no debounce,
+ * `fromIncomingFileEvent`, `autoPdfSinceUnixMs`, or pre-upload fingerprint checks). Set `false`
+ * before shipping — proves emit→HTTP independent of batch auto-PDF logic.
+ */
+const UCE_FORCE_UPLOAD_ON_INCOMING = true;
 
 /** FileWisely staged PDFs: `C:\\FileWisely\\Incoming\\fw_*.pdf` (case-insensitive basename). */
 function isFwPdfPath(p) {
@@ -189,6 +195,8 @@ const fwPdfStateByPath = new Map();
 const fwPathsSeenFromIncoming = new Set();
 /** Paths from last `uce-incoming-file` emit until `uce_pdf_meta_for_path` merges them (fills gaps vs `list_pdf_metas_since`). */
 const pendingIncomingPdfPathByKey = new Map();
+/** Rust-provided meta from `uce-incoming-file` payload (mtime + size) — bypasses `list_pdf_metas_since` vs clock/`since` mismatches. */
+const pendingSyntheticIncomingMetaByKey = new Map();
 const MAX_PENDING_INCOMING_PDFS = 64;
 
 function reportUploadSkip(reason) {
@@ -5819,6 +5827,133 @@ async function getUploadContextSnapshot() {
 }
 
 /**
+ * TEMP: straight-line upload for incoming PDF path — not gated on source label, poll windows, or
+ * `uploadedPdfFingerprints` (pre-check). On success, fingerprint is recorded so the debounced
+ * batch usually does not POST again.
+ */
+async function uceForceUploadIncomingPdf(rawPath, syntheticMeta) {
+  if (!rawPath || typeof rawPath !== "string") return;
+  if (!rawPath.toLowerCase().endsWith(".pdf")) return;
+  console.info(`UCE_FORCE_UPLOAD_TRIGGERED path=${rawPath}`);
+  const filePath = rawPath;
+  try {
+    let meta =
+      syntheticMeta &&
+      typeof syntheticMeta === "object" &&
+      syntheticMeta.file_path
+        ? syntheticMeta
+        : null;
+    if (!meta) {
+      try {
+        meta = await invoke("uce_pdf_meta_for_path", { path: filePath });
+      } catch (_) {
+        meta = null;
+      }
+    }
+    if (!meta || !meta.file_path) {
+      meta = {
+        file_path: filePath,
+        modified_unix_ms: Date.now(),
+        file_size: 0,
+      };
+    }
+    try {
+      await invoke("uce_log_pdf_lifecycle", {
+        phase: "upload_started",
+        path: meta.file_path,
+      });
+    } catch (_) {
+      /* optional */
+    }
+    try {
+      await invoke("uce_pipeline_upload_stage", {
+        path: meta.file_path,
+        stage: "attempt",
+        detail: "uce_force_incoming",
+      });
+    } catch (_) {
+      /* optional */
+    }
+    console.info(`UCE_UPLOAD_STARTED path=${meta.file_path} trace=uce_force_incoming`);
+    const capture = await invoke("read_pdf_file", { path: meta.file_path });
+    const pipelinePath = capture?.file_path || meta.file_path;
+    const contextSnapshot = await getUploadContextSnapshot();
+    const uploadResult = await uploadCapture(
+      capture,
+      contextSnapshot,
+      "pdf",
+      "uce_force_incoming",
+      pipelinePath
+    );
+    try {
+      await invoke("uce_log_pdf_lifecycle", {
+        phase: "upload_finished",
+        path: pipelinePath,
+        success: !uploadResult?.skipped,
+      });
+    } catch (_) {
+      /* optional */
+    }
+    if (!uploadResult?.skipped) {
+      try {
+        await invoke("uce_pipeline_upload_stage", {
+          path: pipelinePath,
+          stage: "success",
+          detail: null,
+        });
+      } catch (_) {
+        /* optional */
+      }
+      const fp = `${meta.file_path}|${meta.modified_unix_ms}`;
+      uploadedPdfFingerprints.add(fp);
+      lastAutoPdfKey = fp;
+      lastAutoPdfUploadAt = Date.now();
+      emitUceContextCapturedIfRelevant({
+        source: "uce_force_incoming",
+        fileHint: pipelinePath.split(/[\\/]/).pop() || null,
+      });
+    } else {
+      try {
+        await invoke("uce_pipeline_upload_stage", {
+          path: pipelinePath,
+          stage: "failure",
+          detail: uploadResult?.message || "skipped_no_endpoint",
+        });
+      } catch (_) {
+        /* optional */
+      }
+      console.info(
+        `UCE_UPLOAD_SKIPPED_WITH_REASON path=${pipelinePath} reason=${uploadResult?.message || "skipped"} trace=uce_force_incoming`
+      );
+    }
+  } catch (e) {
+    const msg = typeof e === "string" ? e : e?.message || String(e);
+    console.error(
+      `UCE_UPLOAD_FAILED_WITH_ERROR path=${filePath} error=${msg}`,
+      e
+    );
+    try {
+      await invoke("uce_log_pdf_lifecycle", {
+        phase: "upload_finished",
+        path: filePath,
+        success: false,
+      });
+    } catch (_) {
+      /* optional */
+    }
+    try {
+      await invoke("uce_pipeline_upload_stage", {
+        path: filePath,
+        stage: "failure",
+        detail: msg,
+      });
+    } catch (_) {
+      /* optional */
+    }
+  }
+}
+
+/**
  * CCC often prints several PDFs in a burst; the watcher emits once per file. Without debouncing,
  * the first `checkAutoPdfUpload` sets `autoPdfBusy` and the rest return immediately — files are missed.
  * Wait INCOMING_BATCH_DEBOUNCE_MS after the last signal, then run one upload pass over the full list.
@@ -5843,7 +5978,9 @@ async function checkAutoPdfUpload(source = "poll") {
   }
   const ctxSnap = await getUploadContextSnapshot();
   const fromIncomingFileEvent =
-    source === "incoming-debounced" || source === "incoming-queued";
+    source === "incoming-debounced" ||
+    source === "incoming-queued" ||
+    source === "rust-nudge";
 
   const list = await invoke("list_pdf_metas_since", {
     sinceUnixMs: autoPdfSinceUnixMs,
@@ -5874,6 +6011,26 @@ async function checkAutoPdfUpload(source = "poll") {
   } catch (e) {
     console.warn("[UCE] merge fw Incoming list failed:", e);
     mergedList = listArr;
+  }
+
+  if (pendingSyntheticIncomingMetaByKey.size > 0) {
+    const byKey = new Map();
+    for (const m of mergedList) {
+      if (m?.file_path) byKey.set(fwKeyPath(m.file_path), m);
+    }
+    for (const [k, meta] of pendingSyntheticIncomingMetaByKey.entries()) {
+      if (meta?.file_path) {
+        byKey.set(k, meta);
+      }
+    }
+    pendingSyntheticIncomingMetaByKey.clear();
+    mergedList = Array.from(byKey.values());
+    mergedList.sort((a, b) => {
+      const ta = Number(a?.modified_unix_ms) || 0;
+      const tb = Number(b?.modified_unix_ms) || 0;
+      if (ta !== tb) return ta - tb;
+      return String(a?.file_path || "").localeCompare(String(b?.file_path || ""));
+    });
   }
 
   if (pendingIncomingPdfPathByKey.size > 0) {
@@ -6023,6 +6180,15 @@ async function checkAutoPdfUpload(source = "poll") {
         } catch (_) {
           /* optional command */
         }
+        try {
+          await invoke("uce_pipeline_upload_stage", {
+            path: newest.file_path,
+            stage: "attempt",
+            detail: null,
+          });
+        } catch (_) {
+          /* optional */
+        }
         console.info(`UCE_UPLOAD_STARTED path=${newest.file_path}`);
         const capture = await invoke("read_pdf_file", { path: newest.file_path });
         const contextSnapshot = await getUploadContextSnapshot();
@@ -6040,6 +6206,27 @@ async function checkAutoPdfUpload(source = "poll") {
           });
         } catch (_) {
           /* optional command */
+        }
+        if (!uploadResult?.skipped) {
+          try {
+            await invoke("uce_pipeline_upload_stage", {
+              path: newest.file_path,
+              stage: "success",
+              detail: null,
+            });
+          } catch (_) {
+            /* optional */
+          }
+        } else {
+          try {
+            await invoke("uce_pipeline_upload_stage", {
+              path: newest.file_path,
+              stage: "failure",
+              detail: uploadResult?.message || "skipped_no_endpoint",
+            });
+          } catch (_) {
+            /* optional */
+          }
         }
         lastUploadResult = uploadResult;
         lastAutoPdfKey = key;
@@ -6071,6 +6258,18 @@ async function checkAutoPdfUpload(source = "poll") {
           });
         } catch (_) {
           /* optional command */
+        }
+        try {
+          await invoke("uce_pipeline_upload_stage", {
+            path: newest.file_path,
+            stage: "failure",
+            detail:
+              typeof oneErr === "string"
+                ? oneErr
+                : oneErr?.message || String(oneErr),
+          });
+        } catch (_) {
+          /* optional */
         }
         const pdfName = newest.file_path.split(/[\\/]/).pop() || "file.pdf";
         errors.push({ name: pdfName, err: oneErr });
@@ -7214,10 +7413,27 @@ async function uceRuntimePrinterCheck() {
   try {
     await listen("uce-incoming-file", (event) => {
       let path = null;
+      let syntheticMeta = null;
       try {
         const p = event?.payload;
         if (typeof p === "string") path = p;
-        else if (p && typeof p.path === "string") path = p.path;
+        else if (p && typeof p.path === "string") {
+          path = p.path;
+          const ms = p.modified_unix_ms;
+          const sz = p.file_size;
+          if (
+            typeof ms === "number" &&
+            Number.isFinite(ms) &&
+            typeof sz === "number" &&
+            Number.isFinite(sz)
+          ) {
+            syntheticMeta = {
+              file_path: path,
+              modified_unix_ms: ms,
+              file_size: sz,
+            };
+          }
+        }
       } catch (_) {
         /* ignore */
       }
@@ -7225,11 +7441,21 @@ async function uceRuntimePrinterCheck() {
         void invoke("uce_js_incoming_pdf_event", { path }).catch(() => {});
         const pk = fwKeyPath(path);
         pendingIncomingPdfPathByKey.set(pk, path);
+        if (syntheticMeta) {
+          pendingSyntheticIncomingMetaByKey.set(pk, syntheticMeta);
+          while (pendingSyntheticIncomingMetaByKey.size > MAX_PENDING_INCOMING_PDFS) {
+            const firstK = pendingSyntheticIncomingMetaByKey.keys().next().value;
+            pendingSyntheticIncomingMetaByKey.delete(firstK);
+          }
+        }
         while (pendingIncomingPdfPathByKey.size > MAX_PENDING_INCOMING_PDFS) {
           const firstK = pendingIncomingPdfPathByKey.keys().next().value;
           pendingIncomingPdfPathByKey.delete(firstK);
         }
         console.info(`UCE_JS_INCOMING_PDF_EVENT_RECEIVED path=${path}`);
+        if (UCE_FORCE_UPLOAD_ON_INCOMING) {
+          void uceForceUploadIncomingPdf(path, syntheticMeta);
+        }
       }
       if (path && isFwPdfPath(path)) {
         fwPathsSeenFromIncoming.add(fwKeyPath(path));
@@ -7245,6 +7471,16 @@ async function uceRuntimePrinterCheck() {
     void invoke("uce_js_upload_listener_ready").catch(() => {});
   } catch (e) {
     console.warn("[UCE] uce-incoming-file listener:", e);
+  }
+
+  try {
+    await listen("uce-upload-pipeline-nudge", () => {
+      console.info("[UCE] uce-upload-pipeline-nudge — retry upload batch");
+      void checkAutoPdfUpload("rust-nudge");
+    });
+    console.info("UCE_JS_LISTENER_REGISTERED event=uce-upload-pipeline-nudge");
+  } catch (e) {
+    console.warn("[UCE] uce-upload-pipeline-nudge listener:", e);
   }
 
   void refreshPrinterPolicyCache();

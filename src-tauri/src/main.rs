@@ -1293,6 +1293,7 @@ fn uce_js_upload_listener_ready() {
 
 #[tauri::command]
 fn uce_js_incoming_pdf_event(path: String) {
+    eprintln!("UCE_JS_INCOMING_PDF_EVENT_RECEIVED path={path}");
     services::js_runtime_diag::record_incoming_pdf_event(path);
 }
 

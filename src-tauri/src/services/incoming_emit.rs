@@ -1,7 +1,10 @@
 //! Main-thread emit of `uce-incoming-file` for the JS upload pipeline (reliable from worker threads).
 
 use serde::Serialize;
+use serde_json::json;
+use std::fs;
 use std::path::Path;
+use std::time::UNIX_EPOCH;
 use tauri::Emitter;
 
 use crate::services::pipeline_stage_diag;
@@ -10,6 +13,24 @@ use crate::services::pipeline_stage_diag;
 pub struct IncomingFileEvent {
     pub path: String,
     pub kind: &'static str,
+    /// Present when file existed at emit time — JS merges into upload batch without relying on `list_pdf_metas_since` (mtime vs `since`) gaps.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modified_unix_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_size: Option<u64>,
+}
+
+fn stat_for_emit(path: &Path) -> (Option<i64>, Option<u64>) {
+    let Some(meta) = fs::metadata(path).ok() else {
+        return (None, None);
+    };
+    let sz = meta.len();
+    let ms = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64);
+    (ms, Some(sz))
 }
 
 /// Basename `fw_*.pdf` (case-insensitive) for trace/dedupe/upload bypass.
@@ -25,11 +46,19 @@ pub fn is_fw_incoming_pdf_path(path: &str) -> bool {
 }
 
 pub fn emit_uce_incoming_pdf(app: &tauri::AppHandle, path_str: String) {
-    pipeline_stage_diag::record_emit_incoming(&path_str);
     eprintln!(
-        "UCE_RUST_EMIT_INCOMING path={} event=uce-incoming-file kind=pdf fw_named={}",
+        "UCE_RUST_EMIT_INCOMING_BEFORE path={}",
+        path_str
+    );
+    pipeline_stage_diag::record_emit_incoming(&path_str);
+    let p = Path::new(&path_str);
+    let (modified_unix_ms, file_size) = stat_for_emit(p);
+    eprintln!(
+        "UCE_RUST_EMIT_INCOMING path={} event=uce-incoming-file kind=pdf fw_named={} modified_unix_ms={:?} file_size={:?}",
         path_str,
-        is_fw_incoming_pdf_path(&path_str)
+        is_fw_incoming_pdf_path(&path_str),
+        modified_unix_ms,
+        file_size
     );
     let trace = is_fw_incoming_pdf_path(&path_str);
     if trace {
@@ -50,7 +79,16 @@ pub fn emit_uce_incoming_pdf(app: &tauri::AppHandle, path_str: String) {
     let payload = IncomingFileEvent {
         path: path_str,
         kind: "pdf",
+        modified_unix_ms,
+        file_size,
     };
+
+    let app_nudge = app.clone();
+    let path_nudge = path_log.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        let _ = app_nudge.emit("uce-upload-pipeline-nudge", json!({ "path": path_nudge }));
+    });
 
     if let Err(e) = main_thread.run_on_main_thread(move || {
         if trace {
@@ -61,6 +99,8 @@ pub fn emit_uce_incoming_pdf(app: &tauri::AppHandle, path_str: String) {
         }
         if let Err(e2) = emit_handle.emit("uce-incoming-file", payload) {
             eprintln!("[UCE] emit uce-incoming-file failed: {e2}");
+        } else {
+            eprintln!("UCE_RUST_EMIT_INCOMING_AFTER path={}", path_log);
         }
     }) {
         eprintln!("[UCE] run_on_main_thread (uce-incoming-file) failed: {e}");
