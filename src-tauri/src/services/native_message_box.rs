@@ -1,7 +1,9 @@
 //! Single entry point for Windows `MessageBoxW` — **every** automatic native dialog must go through here.
 //! Applies `popup_suppression::suppress_all_effective()` and records Connection Doctor fields.
+//! Always writes `popup_log` + stderr **before** any `MessageBoxW` (file log survives no-console runs).
 
 use super::js_runtime_diag;
+use super::popup_log;
 use super::popup_suppression;
 
 /// Style bits: `MB_OK`, `MB_ICONWARNING`, `MB_ICONINFORMATION`, `MB_SETFOREGROUND` from `windows_sys`.
@@ -13,17 +15,21 @@ pub fn uce_show_native_message_box(
     body: &str,
     mb_flags: u32,
 ) {
-    if suppress_all_native(kind, source, title, body) {
+    let preview = summarize_native_dialog(title, body);
+    if suppress_all_native(kind, source, &preview) {
         return;
     }
+    let msg_line = format!("SHOWN {}", preview);
+    popup_log::append(kind, source, &msg_line);
+    let stderr_msg = preview.chars().take(500).collect::<String>();
+    eprintln!(
+        "UCE_NATIVE_POPUP kind={} source={} message={}",
+        kind, source, stderr_msg
+    );
     js_runtime_diag::record_native_popup_shown(
         kind.to_string(),
         source.to_string(),
-        summarize_native_dialog(title, body),
-    );
-    eprintln!(
-        "UCE_UI_NATIVE_ALERT kind={} source={} title=\"{}\"",
-        kind, source, title
+        preview.clone(),
     );
     unsafe_raw_message_box(title, body, mb_flags);
 }
@@ -36,9 +42,14 @@ pub fn uce_show_native_message_box(
     body: &str,
     _mb_flags: u32,
 ) {
-    let _ = (kind, source, title, body);
+    let preview = summarize_native_dialog(title, body);
+    popup_log::append(
+        kind,
+        source,
+        &format!("SKIPPED_NON_WINDOWS {}", preview),
+    );
     eprintln!(
-        "[UCE] native MessageBox skipped (not Windows): kind={kind} source={source}"
+        "UCE_NATIVE_POPUP_SKIPPED_PLATFORM kind={kind} source={source} message={preview}"
     );
 }
 
@@ -48,7 +59,7 @@ fn summarize_native_dialog(title: &str, body: &str) -> String {
 }
 
 /// Returns `true` if suppressed (caller must not show MessageBox).
-fn suppress_all_native(kind: &str, source: &str, title: &str, body: &str) -> bool {
+fn suppress_all_native(kind: &str, source: &str, preview: &str) -> bool {
     // Escape hatch: force native dialogs visible even when global suppression is on (desktop debugging).
     if std::env::var("UCE_ALLOW_NATIVE_MESSAGEBOX")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -59,17 +70,17 @@ fn suppress_all_native(kind: &str, source: &str, title: &str, body: &str) -> boo
     if !popup_suppression::suppress_all_effective() {
         return false;
     }
-    let preview = summarize_native_dialog(title, body);
+    let msg_line = format!("SUPPRESSED {}", preview);
+    popup_log::append(kind, source, &msg_line);
+    let stderr_msg = preview.chars().take(500).collect::<String>();
     eprintln!(
-        "UCE_NATIVE_POPUP_SUPPRESSED kind={} source={} message_preview={}",
-        kind,
-        source,
-        preview.chars().take(200).collect::<String>()
+        "UCE_NATIVE_POPUP_SUPPRESSED kind={} source={} message={}",
+        kind, source, stderr_msg
     );
     js_runtime_diag::record_native_popup_suppressed(
         kind.to_string(),
         source.to_string(),
-        preview,
+        preview.to_string(),
     );
     true
 }
