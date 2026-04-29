@@ -3340,7 +3340,11 @@ let healthPrinterExact = false;
 let printerMissingSince = null;
 let coreUnhealthySince = null;
 /** From `uce_printer_policy_snapshot` — refreshed on a TTL in `refreshPrinterPolicyCache`. */
-let ucePrinterPolicyCache = { ccc_temp_watch_only: false, loadedAt: 0 };
+let ucePrinterPolicyCache = {
+  ccc_temp_watch_only: false,
+  suppress_printer_severe_native: false,
+  loadedAt: 0,
+};
 const PRINTER_POLICY_CACHE_MS = 30_000;
 /** Severe printer modal / native alert — avoid spam if health keeps polling. */
 const PRINTER_SEVERE_MODAL_DEBOUNCE_MS = 15 * 60 * 1000;
@@ -3358,6 +3362,7 @@ async function refreshPrinterPolicyCache() {
     const s = await invoke("uce_printer_policy_snapshot");
     ucePrinterPolicyCache = {
       ccc_temp_watch_only: !!s?.ccc_temp_watch_only,
+      suppress_printer_severe_native: !!s?.suppress_printer_severe_native,
       loadedAt: Date.now(),
     };
   } catch (_) {
@@ -3367,6 +3372,9 @@ async function refreshPrinterPolicyCache() {
 
 /** Missing printer is warn-only unless print queue is required and shop is not CCC-temp-only. */
 function isUceMissingPrinterNonCritical() {
+  if (ucePrinterPolicyCache.suppress_printer_severe_native) {
+    return true;
+  }
   return (
     !isUcePrinterRequiredExplicit() || ucePrinterPolicyCache.ccc_temp_watch_only
   );

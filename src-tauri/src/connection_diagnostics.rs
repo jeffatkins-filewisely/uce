@@ -226,6 +226,8 @@ fn capture_pipeline_snapshot(app: &AppHandle) -> serde_json::Value {
         "ccc_temp_watch_path": ccc_temp.to_string_lossy(),
         "watched_incoming_root": print_config::watched_incoming_root().to_string_lossy(),
         "ccc_temp_watch_only_env": print_config::ccc_temp_watch_only(),
+        "suppress_printer_severe_native": print_config::ccc_temp_watch_only()
+            && capture_pipeline_status::is_watcher_running(),
         "auto_discovered_ccc_dirs": pw.auto_discovered_ccc_dirs,
         "general_document_capture_enabled": pw.general_document_capture_enabled,
         "general_min_file_bytes": pw.general_min_file_bytes,
@@ -243,7 +245,7 @@ fn capture_pipeline_snapshot(app: &AppHandle) -> serde_json::Value {
             "Popups: stderr UCE_UI_NATIVE_ALERT kind=printer_severe|printer_repair_uac|webview_load_failed|dev_server_unreachable before each Windows MessageBox. Env UCE_SUPPRESS_PRINTER_NATIVE_ALERT=1 or localStorage uce_suppress_printer_severe_modal=1.",
             "JS console: UCE_UPLOAD_STARTED / UCE_UPLOAD_SUCCESS|SKIPPED|FAILED, UCE_UI_CLIENT kind=printer_severe_modal — DevTools when WebView is up.",
             "Search stderr for UCE_GENERAL_FILE_* / UCE_CCC_* — run UCE from Command Prompt to see lines.",
-            "Printer: missing FileWisely Printer is warn-only unless localStorage uce_printer_required=1 (and not UCE_CCC_TEMP_WATCH_ONLY). Suppress: uce_suppress_printer_severe_modal=1.",
+            "Printer: when UCE_CCC_TEMP_WATCH_ONLY and capture_pipeline_status=running, severe/native printer alerts are suppressed (suppress_printer_severe_native from uce_printer_policy_snapshot). Env UCE_SUPPRESS_PRINTER_NATIVE_ALERT=1 also skips MessageBox.",
             "Toast every ~25s: health attention — expand Connection Doctor status (capture_pipeline) for printer/upload stale.",
             "WebView 'Could not load': classification chrome_error_page in diagnostics — start Vite (dev) or reinstall (prod)."
         ],

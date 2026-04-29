@@ -1630,6 +1630,13 @@ async fn uce_printer_severe_native_alert() -> Result<(), String> {
             );
             return Ok(());
         }
+        if uce_suppress_printer_severe_for_ccc_capture() {
+            eprintln!(
+                "UCE_UI_NATIVE_ALERT skipped kind=printer_severe reason=ccc_temp_capture_active pipeline={}",
+                services::capture_pipeline_status::status_label()
+            );
+            return Ok(());
+        }
         tokio::task::spawn_blocking(|| {
             printer_severe_native_message_box();
         })
@@ -1844,12 +1851,19 @@ fn uce_check_filewisely_printer() -> Result<PrinterCheckResult, String> {
 #[derive(Serialize)]
 struct UcePrinterPolicySnapshot {
     ccc_temp_watch_only: bool,
+    /// When true, skip native / severe printer dialogs: CCC temp mode and print watcher thread is running.
+    suppress_printer_severe_native: bool,
+}
+
+fn uce_suppress_printer_severe_for_ccc_capture() -> bool {
+    print_config::ccc_temp_watch_only() && services::capture_pipeline_status::is_watcher_running()
 }
 
 #[tauri::command]
 fn uce_printer_policy_snapshot() -> UcePrinterPolicySnapshot {
     UcePrinterPolicySnapshot {
         ccc_temp_watch_only: print_config::ccc_temp_watch_only(),
+        suppress_printer_severe_native: uce_suppress_printer_severe_for_ccc_capture(),
     }
 }
 

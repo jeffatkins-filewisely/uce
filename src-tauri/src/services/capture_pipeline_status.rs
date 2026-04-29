@@ -19,6 +19,11 @@ pub fn status_label() -> &'static str {
     }
 }
 
+/// True after the print watcher / debouncer thread reports a healthy start.
+pub fn is_watcher_running() -> bool {
+    STATUS.load(Ordering::SeqCst) == RUNNING
+}
+
 pub fn set_running() {
     STATUS.store(RUNNING, Ordering::SeqCst);
     if let Ok(mut g) = LAST_FAILURE.lock() {
