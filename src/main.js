@@ -100,10 +100,6 @@ const UCE_HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
 const UCE_HEARTBEAT_FETCH_MS = 15000;
 let uceHeartbeatIntervalId = null;
 let uceLoggedFirstHeartbeatSuccess = false;
-/** Supabase heartbeat may nudge GitHub updater; avoid overlapping / spamming checks. */
-const UCE_HEARTBEAT_NUDGE_UPDATE_COOLDOWN_MS = 2 * 60 * 1000;
-let uceHeartbeatUpdateNudgeInFlight = false;
-let uceLastHeartbeatNudgeUpdateAt = 0;
 /** Active window poll for context + RO monitor (CCC title + leading digits). */
 const CONTEXT_POLL_MS = 500;
 const AUTO_PDF_POLL_MS = 3000;
@@ -4916,9 +4912,14 @@ function traceUceUiPopup(kind, source, message) {
   }).catch(() => {});
 }
 
-/** `durationMs <= 0` = stay open until {@link dismissToast} (e.g. Esc). */
-function showToast(text, kind = "success", durationMs = 3600) {
-  traceUceUiPopup("toast", "showToast", String(text ?? ""));
+/**
+ * @param {{ skipPopupTrace?: boolean }} [options] — set when caller already traced (e.g. health_attention).
+ * `durationMs <= 0` = stay open until {@link dismissToast} (e.g. Esc).
+ */
+function showToast(text, kind = "success", durationMs = 3600, options = {}) {
+  if (!options?.skipPopupTrace) {
+    traceUceUiPopup("toast", "showToast", String(text ?? ""));
+  }
   if (toastTimer) clearTimeout(toastTimer);
   toastTimer = null;
   toastEl.replaceChildren();
@@ -6660,23 +6661,15 @@ async function runUceAppUpdateCheck(options = {}) {
 }
 
 /**
- * Heartbeat (`uce-ingest`) can return `{ update_available: true }`; run the existing GitHub/Tauri updater.
- * Debounced so rapid heartbeats or slow checks don't stack.
+ * Heartbeat (`uce-ingest`) can return `{ update_available: true }`.
+ * We do **not** run an immediate download/relaunch from heartbeat — that produced disruptive toasts
+ * and restarts during CCC work. The scheduled `scheduleUceStartupUpdateChecks` interval still checks
+ * (every {@link UCE_UPDATE_CHECK_INTERVAL_MS}) so installs happen without hijacking every heartbeat.
  */
 function maybeRunUpdateFromHeartbeatNudge() {
-  if (uceHeartbeatUpdateNudgeInFlight) return;
-  const now = Date.now();
-  if (
-    uceLastHeartbeatNudgeUpdateAt > 0 &&
-    now - uceLastHeartbeatNudgeUpdateAt < UCE_HEARTBEAT_NUDGE_UPDATE_COOLDOWN_MS
-  ) {
-    return;
-  }
-  uceHeartbeatUpdateNudgeInFlight = true;
-  uceLastHeartbeatNudgeUpdateAt = now;
-  void runUceAppUpdateCheck({ force: true }).finally(() => {
-    uceHeartbeatUpdateNudgeInFlight = false;
-  });
+  console.info(
+    "[UCE updater] heartbeat update_available=true — ignoring for immediate install (use scheduled check or tray)"
+  );
 }
 
 /**
@@ -6727,7 +6720,8 @@ function maybeHealthAttentionToast(effectivePrinterOk, uploadsOk, attentionDetai
   if (sig === lastHealthAttentionToastSignature) return;
   lastHealthAttentionToastSignature = sig;
   logEvent("health_attention_toast", sig);
-  showToast(`⚠️ ${sig}`, "warning", 16000);
+  traceUceUiPopup("health_attention", "maybeHealthAttentionToast", sig);
+  showToast(`⚠️ ${sig}`, "warning", 16000, { skipPopupTrace: true });
 }
 
 async function hidePrinterSevereModal(fromHealthyRecovery = false) {
@@ -6905,8 +6899,12 @@ function uploadsHealthSummary() {
 function pdfPipelineStale() {
   const mode = inferPreferredModeFromContext(lastPolledContext || {});
   if (mode !== "pdf") return false;
-  if (!lastAutoPdfUploadAt) return false;
-  return Date.now() - lastAutoPdfUploadAt > 120_000;
+  const lastAny = Math.max(
+    Number(lastAutoPdfUploadAt) || 0,
+    Number(lastSuccessfulUploadAt) || 0
+  );
+  if (!lastAny) return false;
+  return Date.now() - lastAny > 120_000;
 }
 
 /** Short copy for the red banner so users see what failed (not just “needs attention”). */
