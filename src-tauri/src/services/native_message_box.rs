@@ -1,6 +1,9 @@
 //! Single entry point for Windows `MessageBoxW` — **every** automatic native dialog must go through here.
 //! Applies `popup_suppression::suppress_all_effective()` and records Connection Doctor fields.
 //! Always writes `popup_log` + stderr **before** any `MessageBoxW` (file log survives no-console runs).
+//!
+//! **Release builds:** native `MessageBoxW` is **disabled entirely** (log only). Opt-in for QA:
+//! `UCE_ALLOW_NATIVE_MESSAGEBOX=1`.
 
 use super::js_runtime_diag;
 use super::popup_log;
@@ -16,6 +19,30 @@ pub fn uce_show_native_message_box(
     mb_flags: u32,
 ) {
     let preview = summarize_native_dialog(title, body);
+
+    #[cfg(not(debug_assertions))]
+    {
+        let allow = std::env::var("UCE_ALLOW_NATIVE_MESSAGEBOX")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        if !allow {
+            let msg_line = format!("BLOCKED_PRODUCTION_NO_MESSAGEBOX {}", preview);
+            popup_log::append(kind, source, &msg_line);
+            let stderr_msg = preview.chars().take(500).collect::<String>();
+            eprintln!(
+                "UCE_NATIVE_POPUP_BLOCKED kind={} source={} message={}",
+                kind, source, stderr_msg
+            );
+            js_runtime_diag::record_native_popup_suppressed(
+                kind.to_string(),
+                source.to_string(),
+                format!("production_block|{}", preview),
+            );
+            let _ = mb_flags;
+            return;
+        }
+    }
+
     if suppress_all_native(kind, source, &preview) {
         return;
     }
