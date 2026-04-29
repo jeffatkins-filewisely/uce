@@ -34,6 +34,11 @@ import {
   recordUserActivity,
 } from "./uceContextSignals.js";
 import { getUceDeviceId } from "./uceDeviceId.js";
+import {
+  getUceSuppressAllCached,
+  initUcePopupSuppression,
+  tracePopupSuppressed,
+} from "./ucePopupSuppression.js";
 import { buildUceReasonPayload } from "./uceContextReasonLayer.js";
 import {
   armPendingMissingSuppressBuffer,
@@ -4900,6 +4905,10 @@ async function dismissRightPeek() {
 const TOAST_BRAND = "UCE";
 
 function traceUceUiPopup(kind, source, message) {
+  if (getUceSuppressAllCached()) {
+    void tracePopupSuppressed(kind, source, message);
+    return;
+  }
   const msg = message != null ? String(message) : "";
   const oneLine = msg.replace(/\s+/g, " ").trim();
   console.info(
@@ -4917,6 +4926,13 @@ function traceUceUiPopup(kind, source, message) {
  * `durationMs <= 0` = stay open until {@link dismissToast} (e.g. Esc).
  */
 function showToast(text, kind = "success", durationMs = 3600, options = {}) {
+  if (
+    !options?.allowEvenWhenSuppressed &&
+    getUceSuppressAllCached()
+  ) {
+    void tracePopupSuppressed("toast", "showToast", String(text ?? ""));
+    return;
+  }
   if (!options?.skipPopupTrace) {
     traceUceUiPopup("toast", "showToast", String(text ?? ""));
   }
@@ -6718,6 +6734,11 @@ function maybeHealthAttentionToast(effectivePrinterOk, uploadsOk, attentionDetai
   }
   const sig = attentionDetail || "needs attention";
   if (sig === lastHealthAttentionToastSignature) return;
+  if (getUceSuppressAllCached()) {
+    void tracePopupSuppressed("health_attention", "maybeHealthAttentionToast", sig);
+    lastHealthAttentionToastSignature = sig;
+    return;
+  }
   lastHealthAttentionToastSignature = sig;
   logEvent("health_attention_toast", sig);
   traceUceUiPopup("health_attention", "maybeHealthAttentionToast", sig);
@@ -6741,6 +6762,14 @@ async function showPrinterSevereModal() {
   if (!ucePrinterSevereModal || printerModalDismissedUntilOk) return;
   if (isUceSuppressPrinterSevereModal()) return;
   if (isUceMissingPrinterNonCritical()) return;
+  if (getUceSuppressAllCached()) {
+    void tracePopupSuppressed(
+      "printer_severe_modal",
+      "showPrinterSevereModal",
+      "printer severe UI suppressed"
+    );
+    return;
+  }
   console.warn(
     "UCE_UI_CLIENT kind=printer_severe_modal (Windows: invoke uce_printer_severe_native_alert → native MessageBox)"
   );
@@ -6966,7 +6995,7 @@ async function updateUceHealthStrip() {
       uceBlockingBanner.title = msg;
       uceBlockingBanner.setAttribute("aria-label", msg);
     }
-    if (isUceSuppressBlockingHealthBanner()) {
+    if (isUceSuppressBlockingHealthBanner() || getUceSuppressAllCached()) {
       hideBlockingBanner();
     } else if (uceBlockingBanner) {
       uceBlockingBanner.hidden = false;
@@ -7038,7 +7067,7 @@ async function updateUceHealthStrip() {
 
   syncHardFailureUi(printerOk, uploadsOk);
   maybeHealthAttentionToast(effectivePrinterOk, uploadsOk, bannerDetail);
-  if (isUceSuppressBlockingHealthBanner()) {
+  if (isUceSuppressBlockingHealthBanner() || getUceSuppressAllCached()) {
     hideBlockingBanner();
   }
   if (
@@ -7125,6 +7154,14 @@ async function selfHealPrinter(fromStartup = false) {
 /** Toast + one-click print to FileWisely Printer (Rust `uce-office-print-prompt` / `uce-filewisely-send-doc-prompt`). */
 function showOfficeSendToFilewiselyPrompt(path, payload) {
   if (!path || typeof path !== "string") return;
+  if (getUceSuppressAllCached()) {
+    void tracePopupSuppressed(
+      "office_routing_prompt",
+      "showOfficeSendToFilewiselyPrompt",
+      path
+    );
+    return;
+  }
   const message =
     payload &&
     typeof payload.message === "string" &&
@@ -7173,6 +7210,7 @@ async function uceRuntimePrinterCheck() {
 }
 
 (async function bootstrapUce() {
+  await initUcePopupSuppression(invoke);
   try {
     await listen("uce-incoming-file", (event) => {
       let path = null;

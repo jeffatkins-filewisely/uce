@@ -2,8 +2,21 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getUceDeviceId } from "./uceDeviceId.js";
+import {
+  getUceSuppressAllCached,
+  initUcePopupSuppression,
+  tracePopupSuppressed,
+} from "./ucePopupSuppression.js";
 
 const root = document.getElementById("root");
+
+function guardedAlert(msg) {
+  if (getUceSuppressAllCached()) {
+    void tracePopupSuppressed("alert", "connection_doctor", msg);
+    return;
+  }
+  alert(msg);
+}
 
 function params() {
   const q = new URLSearchParams(window.location.search);
@@ -125,7 +138,7 @@ async function renderStatus() {
   root.innerHTML = `
 <div class="wrap">
   <h1>Connection &amp; capture status</h1>
-  <p class="hint">JSON below includes full <strong>capture_pipeline</strong>. <strong>Find CCC Folders</strong> scans typical CCC locations for recent PDFs/docs and saves paths to <code>auto_discovered_ccc_dirs</code> (watchers refresh ~60s). <strong>Copy diagnostic report</strong> includes capture health. <strong>CCC Capture Test</strong> waits for a <em>new</em> PDF (30s). If the test fails, auto-discovery runs once automatically. Popups: <code>trace_hints</code> / <code>uce_suppress_printer_severe_modal</code>.</p>
+  <p class="hint">JSON below includes full <strong>capture_pipeline</strong>. <strong>Find CCC Folders</strong> scans typical CCC locations for recent PDFs/docs and saves paths to <code>auto_discovered_ccc_dirs</code> (watchers refresh ~60s). <strong>Copy diagnostic report</strong> includes capture health. <strong>CCC Capture Test</strong> waits for a <em>new</em> PDF (30s). If the test fails, auto-discovery runs once automatically. Global popup mute: <code>uce_suppress_all_popups</code> / env <code>UCE_SUPPRESS_ALL_POPUPS</code>. Printer-only: <code>uce_suppress_printer_severe_modal</code>.</p>
   <pre class="mono">${esc(JSON.stringify(j, null, 2))}</pre>
   <p class="mini">Last heartbeat (UTC): ${esc(lastHuman)}</p>
   <div class="row">
@@ -150,11 +163,11 @@ async function renderStatus() {
   document.getElementById("cdCopy").addEventListener("click", async () => {
     try {
       await invoke("uce_copy_diagnostic_report");
-      alert(
+      guardedAlert(
         "Diagnostic report copied (connection + capture pipeline health; secrets masked)."
       );
     } catch (e) {
-      alert(String(e));
+      guardedAlert(String(e));
     }
   });
 
@@ -202,9 +215,9 @@ async function renderStatus() {
       await navigator.clipboard.writeText(
         JSON.stringify(lastCccTestResult, null, 2)
       );
-      alert("CCC test result copied.");
+      guardedAlert("CCC test result copied.");
     } catch (e) {
-      alert(String(e));
+      guardedAlert(String(e));
     }
   });
 
@@ -242,9 +255,9 @@ async function renderStatus() {
       await navigator.clipboard.writeText(
         JSON.stringify(lastDiscoverResult, null, 2)
       );
-      alert("Discovery result copied.");
+      guardedAlert("Discovery result copied.");
     } catch (e) {
-      alert(String(e));
+      guardedAlert(String(e));
     }
   });
 }
@@ -272,6 +285,7 @@ function injectStyles() {
 }
 
 async function main() {
+  await initUcePopupSuppression(invoke);
   injectStyles();
   try {
     await getCurrentWindow().setTitle("UCE — FileWisely connection");

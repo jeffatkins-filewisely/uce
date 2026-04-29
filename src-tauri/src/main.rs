@@ -260,6 +260,13 @@ fn uce_dev_vite_server_reachable() -> bool {
 
 #[cfg(windows)]
 fn uce_dev_server_unreachable_message_box() {
+    if services::popup_suppression::guard_native_message_box(
+        "native_message_box",
+        "uce_dev_server_unreachable",
+        "Dev server not running",
+    ) {
+        return;
+    }
     eprintln!("UCE_UI_NATIVE_ALERT kind=dev_server_unreachable title=\"UCE — Dev server not running\"");
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
@@ -842,6 +849,13 @@ fn uce_webview_finish_recovery_if_still_broken(app: AppHandle) {
 /// Windows-only: full-screen dialog so the message is never clipped by the 38×38 overlay.
 #[cfg(windows)]
 fn uce_webview_load_failed_native_message_box() {
+    if services::popup_suppression::guard_native_message_box(
+        "native_message_box",
+        "uce_webview_load_failed",
+        "Could not load interface",
+    ) {
+        return;
+    }
     eprintln!("UCE_UI_NATIVE_ALERT kind=webview_load_failed title=\"UCE — Could not load interface\"");
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
@@ -1340,6 +1354,21 @@ fn uce_ui_popup_trace(kind: String, source: String, message: Option<String>) {
     services::js_runtime_diag::record_popup(kind, source, message);
 }
 
+#[tauri::command]
+fn uce_ui_popup_suppressed_trace(kind: String, source: String, message: Option<String>) {
+    services::js_runtime_diag::record_popup_suppressed(kind, source, message);
+}
+
+#[tauri::command]
+fn uce_sync_suppress_all_popups(suppress: bool) {
+    services::popup_suppression::set_from_js(suppress);
+}
+
+#[tauri::command]
+fn uce_get_env_suppress_all_popups() -> Option<String> {
+    std::env::var("UCE_SUPPRESS_ALL_POPUPS").ok()
+}
+
 /// All `fw_*.pdf` in FileWisely Incoming (upload rescue / trace). Does not run Word→PDF conversion.
 fn collect_fw_pdf_metas_in_filewisely_incoming(app: &tauri::AppHandle) -> Vec<PdfMetaResponse> {
     let dir = print_config::watched_incoming_root();
@@ -1663,6 +1692,13 @@ Click OK to dismiss.";
 async fn uce_printer_severe_native_alert() -> Result<(), String> {
     #[cfg(windows)]
     {
+        if services::popup_suppression::guard_native_message_box(
+            "native_message_box",
+            "uce_printer_severe_native_alert",
+            "Printer severe (invoke)",
+        ) {
+            return Ok(());
+        }
         if std::env::var("UCE_SUPPRESS_PRINTER_NATIVE_ALERT")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false)
@@ -2117,6 +2153,7 @@ pub fn run() {
             }
         })
         .setup(|app| {
+            services::popup_suppression::init_defaults_for_build_profile();
             #[cfg(windows)]
             {
                 use tauri_plugin_deep_link::DeepLinkExt;
@@ -2213,6 +2250,9 @@ pub fn run() {
             uce_js_incoming_pdf_event,
             uce_js_report_upload_skip,
             uce_ui_popup_trace,
+            uce_ui_popup_suppressed_trace,
+            uce_sync_suppress_all_popups,
+            uce_get_env_suppress_all_popups,
             list_fw_pdf_metas_in_filewisely_incoming,
             get_pdf_watch_config,
             save_pdf_watch_config,

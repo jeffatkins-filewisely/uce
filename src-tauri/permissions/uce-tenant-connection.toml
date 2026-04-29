@@ -19,4 +19,7 @@ commands.allow = [
   "uce_js_incoming_pdf_event",
   "uce_js_report_upload_skip",
   "uce_ui_popup_trace",
+  "uce_ui_popup_suppressed_trace",
+  "uce_sync_suppress_all_popups",
+  "uce_get_env_suppress_all_popups",
 ]

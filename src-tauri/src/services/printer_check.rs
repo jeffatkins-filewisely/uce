@@ -120,6 +120,13 @@ fn printer_repair_debug(msg: impl AsRef<str>) {
 /// Modal dialog so users always see the next step (WebView toast can be clipped at 38×38).
 #[cfg(windows)]
 fn message_box_printer_repair_uac_hint() {
+    if super::popup_suppression::guard_native_message_box(
+        "native_message_box",
+        "printer_repair_uac",
+        "Install PDF printer (UAC hint)",
+    ) {
+        return;
+    }
     eprintln!("UCE_UI_NATIVE_ALERT kind=printer_repair_uac title=\"UCE — Install PDF printer\"");
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
