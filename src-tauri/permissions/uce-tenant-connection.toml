@@ -1,12 +1,17 @@
 [[permission]]
 identifier = "allow-uce-tenant-connection"
-description = "Tenant config (uce-tenant.json) and Connection Doctor: manual save, diagnostics, heartbeat recording."
+description = "Tenant config (uce-tenant.json) and Connection Doctor: manual save, diagnostics, heartbeat recording, and PDF read/upload IPC (must match JS invoke ACL)."
 commands.allow = [
   "load_tenant_config",
   "load_tenant_business_id",
+  "list_fw_pdf_metas_in_filewisely_incoming",
+  "list_pdf_metas_since",
+  "read_pdf_file",
   "save_tenant_business_id",
   "save_tenant_from_connect",
   "save_tenant_manual_all",
+  "uce_log_pdf_lifecycle",
+  "uce_move_fw_pdf_outcome",
   "uce_open_connection_doctor_cmd",
   "uce_refresh_tray_connection_tooltip",
   "uce_record_heartbeat_outcome",
