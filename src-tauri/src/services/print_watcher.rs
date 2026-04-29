@@ -25,12 +25,18 @@ use crate::services::ccc_capture_diag;
 use crate::services::office_printer_route;
 
 fn extension_kind(path: &Path) -> Option<&'static str> {
-    let ext = path.extension()?.to_str()?.to_lowercase();
-    match ext.as_str() {
-        "pdf" => Some("pdf"),
-        "doc" | "docx" | "rtf" => Some("office"),
-        _ => None,
+    if path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("pdf"))
+        .unwrap_or(false)
+    {
+        return Some("pdf");
     }
+    if converter::is_convertible_office_path(path) {
+        return Some("office");
+    }
+    None
 }
 
 fn office_ext_lower(path: &Path) -> String {
@@ -152,6 +158,7 @@ fn process_filewisely_office_incoming(app: tauri::AppHandle, path: PathBuf, matc
             "[UCE] OFFICE_ENQUEUED_AS_PDF path={} reason=existing_or_current_pdf",
             path_str
         );
+        log_general_pdf_captured_if_needed(matched_rule, &path_str);
         incoming_emit::emit_uce_incoming_pdf(&app, path_str);
         return;
     }
@@ -176,6 +183,7 @@ fn process_filewisely_office_incoming(app: tauri::AppHandle, path: PathBuf, matc
                 let _ = fs::remove_file(&path);
             }
             let path_str = pdf_out.to_string_lossy().to_string();
+            log_general_pdf_captured_if_needed(matched_rule, &path_str);
             incoming_emit::emit_uce_incoming_pdf(&app, path_str);
         }
         Err(e) if e == converter::DUPLICATE_OFFICE_PIPELINE_SKIPPED => {
@@ -200,6 +208,12 @@ fn process_filewisely_office_incoming(app: tauri::AppHandle, path: PathBuf, matc
     }
 }
 
+fn log_general_pdf_captured_if_needed(matched_rule: &str, pdf_path: &str) {
+    if pdf_watch_config::is_general_capture_rule(matched_rule) {
+        eprintln!("UCE_GENERAL_FILE_CAPTURED path={}", pdf_path);
+    }
+}
+
 fn handle_path(
     app: &tauri::AppHandle,
     path: std::path::PathBuf,
@@ -213,11 +227,25 @@ fn handle_path(
         return;
     }
 
+    let cfg = pdf_watch_config::load_pdf_watch_config(app);
+
     let Some(kind) = extension_kind(&path) else {
         return;
     };
 
     let matched_rule = pdf_watch_config::resolve_office_source_rule(&path, roots);
+    let is_general = pdf_watch_config::is_general_capture_rule(matched_rule);
+
+    if is_general {
+        eprintln!("UCE_GENERAL_FILE_SEEN path={}", path.display());
+        if pdf_watch_config::should_ignore_general_document_path(&path) {
+            eprintln!(
+                "UCE_GENERAL_FILE_IGNORED path={} reason=ignore_pattern",
+                path.display()
+            );
+            return;
+        }
+    }
 
     if kind == "office" && office_debug_log_all_sources(app) {
         log_office_debug_source_seen(&path, matched_rule);
@@ -229,11 +257,33 @@ fn handle_path(
         "pdf" => {
             eprintln!("[UCE] File detected: {}", path.display());
             ccc_capture_diag::record_ccc_file_seen(&path, Some(matched_rule));
+
+            if is_general {
+                if let Ok(m) = fs::metadata(&path) {
+                    let min_b = pdf_watch_config::effective_general_min_bytes(&cfg)
+                        .max(pdf_watch_config::min_pdf_bytes(&cfg));
+                    if m.len() < min_b {
+                        eprintln!(
+                            "UCE_GENERAL_FILE_IGNORED path={} reason=too_small bytes={}",
+                            path.display(),
+                            m.len()
+                        );
+                        return;
+                    }
+                }
+            }
+
             let path = incoming_unique_rename::unique_rename_incoming_pdf_if_needed(path);
             if !path.is_file() {
                 return;
             }
             if !wait_for_pdf_file_stable(&path) {
+                if is_general {
+                    eprintln!(
+                        "UCE_GENERAL_FILE_IGNORED path={} reason=not_stable",
+                        path.display()
+                    );
+                }
                 eprintln!(
                     "[UCE] File stable: FAILED (still writing or locked): {}",
                     path.display()
@@ -242,12 +292,28 @@ fn handle_path(
             }
             eprintln!("[UCE] File stable: {}", path.display());
             let path_str = path.to_string_lossy().to_string();
+            log_general_pdf_captured_if_needed(matched_rule, &path_str);
             incoming_emit::emit_uce_incoming_pdf(app, path_str);
         }
         "office" => {
             if !path.is_file() {
                 return;
             }
+
+            if is_general {
+                if let Ok(m) = fs::metadata(&path) {
+                    let min_b = pdf_watch_config::effective_general_min_bytes(&cfg);
+                    if m.len() < min_b {
+                        eprintln!(
+                            "UCE_GENERAL_FILE_IGNORED path={} reason=too_small bytes={}",
+                            path.display(),
+                            m.len()
+                        );
+                        return;
+                    }
+                }
+            }
+
             let path = incoming_unique_rename::unique_rename_incoming_office_if_needed(path);
             if !path.is_file() {
                 return;

@@ -3,6 +3,8 @@
 //! Config file (next to other UCE app data): **`uce-pdf-watch.json`**
 //! ```json
 //! {
+//!   "general_document_capture_enabled": true,
+//!   "general_min_file_bytes": 512,
 //!   "extra_dirs": ["C:/Shop/CCC PDFs", "C:/FileWisely/Incoming"],
 //!   "min_pdf_bytes": 64,
 //!   "word_to_pdf_enabled": true,
@@ -47,6 +49,10 @@ fn default_office_auto_print_silent() -> bool {
 }
 
 fn default_office_print_prompt_fallback() -> bool {
+    true
+}
+
+fn default_general_document_capture_enabled() -> bool {
     true
 }
 
@@ -95,6 +101,12 @@ pub struct PdfWatchConfig {
     /// When true, foreground WINWORD with a resolvable path in the title emits `uce-filewisely-send-doc-prompt`.
     #[serde(default)]
     pub office_winword_send_prompt: bool,
+    /// When true, watch user Documents / Downloads / Desktop / OneDrive for PDF and Office files (hybrid non-CCC capture).
+    #[serde(default = "default_general_document_capture_enabled")]
+    pub general_document_capture_enabled: bool,
+    /// Minimum file size in bytes for files under general paths (default 512). PDFs also use `min_pdf_bytes` as a floor.
+    #[serde(default)]
+    pub general_min_file_bytes: Option<u64>,
 }
 
 impl Default for PdfWatchConfig {
@@ -111,6 +123,8 @@ impl Default for PdfWatchConfig {
             office_intercept_extra_dirs: Vec::new(),
             office_debug_log_all_detected: false,
             office_winword_send_prompt: false,
+            general_document_capture_enabled: default_general_document_capture_enabled(),
+            general_min_file_bytes: None,
         }
     }
 }
@@ -280,7 +294,10 @@ pub fn office_intercept_watch_roots(app: &tauri::AppHandle) -> Vec<(PathBuf, &'s
         return dedupe_office_watch_roots(out);
     }
 
-    for dir in candidate_pdf_dirs(app) {
+    let cfg = load_pdf_watch_config(app);
+    let seed = load_pdf_watch_seed();
+
+    for dir in ccc_core_candidate_dirs(app) {
         if paths_canon_equal(&dir, &primary) {
             continue;
         }
@@ -291,8 +308,18 @@ pub fn office_intercept_watch_roots(app: &tauri::AppHandle) -> Vec<(PathBuf, &'s
         out.push((dir, label));
     }
 
-    let cfg = load_pdf_watch_config(app);
-    let seed = load_pdf_watch_seed();
+    if cfg.general_document_capture_enabled {
+        for (dir, rule) in general_user_document_roots_with_rules() {
+            if paths_canon_equal(&dir, &primary) {
+                continue;
+            }
+            if path_is_under_or_equal_to(&dir, &primary) {
+                continue;
+            }
+            out.push((dir, rule));
+        }
+    }
+
     for s in cfg
         .office_intercept_extra_dirs
         .iter()
@@ -305,6 +332,118 @@ pub fn office_intercept_watch_roots(app: &tauri::AppHandle) -> Vec<(PathBuf, &'s
     }
 
     dedupe_office_watch_roots(out)
+}
+
+/// CCC-first roots: ProgramData CCCIS, `C:\CCC`, `%LOCALAPPDATA%\Temp\CCC`, FileWisely Incoming, `extra_dirs`.
+pub fn ccc_core_candidate_dirs(app: &tauri::AppHandle) -> Vec<PathBuf> {
+    let cfg = load_pdf_watch_config(app);
+    let seed = load_pdf_watch_seed();
+    let mut dirs: Vec<PathBuf> = Vec::new();
+
+    if let Ok(pd) = std::env::var("PROGRAMDATA") {
+        let cccis = PathBuf::from(pd).join("CCCInformation Services");
+        push_if_exists(&mut dirs, cccis.clone());
+        push_if_exists(&mut dirs, cccis.join("CCCONE"));
+        push_first_level_subdirs(
+            &mut dirs,
+            &cccis,
+            &["logs", "log", "temp", "tmp", "cache", "installer"],
+        );
+    }
+    push_if_exists(&mut dirs, PathBuf::from(r"C:\CCC\WORKFILES"));
+    push_if_exists(&mut dirs, PathBuf::from(r"C:\CCC"));
+    push_first_level_subdirs(&mut dirs, Path::new(r"C:\CCC"), &[]);
+    if let Ok(la) = std::env::var("LOCALAPPDATA") {
+        dirs.push(PathBuf::from(la).join("Temp").join("CCC"));
+    }
+
+    #[cfg(windows)]
+    {
+        push_if_exists(&mut dirs, PathBuf::from(r"C:\FileWisely\Incoming"));
+    }
+
+    for s in cfg.extra_dirs.iter().chain(seed.extra_dirs.iter()) {
+        let p = PathBuf::from(s.trim());
+        if !p.as_os_str().is_empty() {
+            dirs.push(p);
+        }
+    }
+
+    dedupe_dirs(dirs)
+}
+
+fn push_general_pair(out: &mut Vec<(PathBuf, &'static str)>, dir: PathBuf, rule: &'static str) {
+    if dir.as_os_str().is_empty() {
+        return;
+    }
+    if dir.exists() {
+        out.push((dir, rule));
+    }
+}
+
+/// Secondary hybrid capture: standard profile folders with stable `general_*` rule ids.
+pub fn general_user_document_roots_with_rules() -> Vec<(PathBuf, &'static str)> {
+    let mut out = Vec::new();
+    let Ok(user_profile) = std::env::var("USERPROFILE") else {
+        return out;
+    };
+    let base = PathBuf::from(&user_profile);
+    push_general_pair(&mut out, base.join("Downloads"), "general_downloads");
+    push_general_pair(&mut out, base.join("Desktop"), "general_desktop");
+    push_general_pair(&mut out, base.join("Documents"), "general_documents");
+    push_general_pair(
+        &mut out,
+        base.join("OneDrive").join("Desktop"),
+        "general_onedrive_desktop",
+    );
+    push_general_pair(
+        &mut out,
+        base.join("OneDrive").join("Documents"),
+        "general_onedrive_documents",
+    );
+    out
+}
+
+pub fn general_user_document_dirs() -> Vec<PathBuf> {
+    general_user_document_roots_with_rules()
+        .into_iter()
+        .map(|(p, _)| p)
+        .collect()
+}
+
+pub fn is_general_capture_rule(rule: &str) -> bool {
+    rule.starts_with("general_")
+}
+
+/// Minimum size for PDFs and Office files under `general_*` roots.
+pub fn effective_general_min_bytes(cfg: &PdfWatchConfig) -> u64 {
+    cfg.general_min_file_bytes.unwrap_or(512).max(64)
+}
+
+/// Skip Office lock files, partial downloads, and non-CCC `%TEMP%` junk (never CCC `Temp\CCC`).
+pub fn should_ignore_general_document_path(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    if name.starts_with("~$") {
+        return true;
+    }
+    if matches!(name.as_str(), "thumbs.db" | "desktop.ini") {
+        return true;
+    }
+    if name.ends_with(".crdownload")
+        || name.ends_with(".partial")
+        || name.ends_with(".download")
+    {
+        return true;
+    }
+    let lower = path.to_string_lossy().to_lowercase();
+    if lower.contains("\\appdata\\local\\temp\\") && !lower.contains("\\temp\\ccc") {
+        return true;
+    }
+    false
 }
 
 /// Longest-prefix match of `path` against watch roots (for `OFFICE_SOURCE_MATCHED_RULE`).
@@ -323,7 +462,7 @@ pub fn resolve_office_source_rule(path: &Path, roots: &[(PathBuf, &'static str)]
     best
 }
 
-/// Default watch list: Downloads, Desktop, Documents, common OneDrive paths, plus `extra_dirs` from config.
+/// Watch list: CCC-first roots plus optional general user folders when `general_document_capture_enabled`.
 pub fn candidate_pdf_dirs(app: &tauri::AppHandle) -> Vec<PathBuf> {
     if print_config::ccc_temp_watch_only() {
         let ccc = print_config::ccc_temp_watch_path();
@@ -331,50 +470,10 @@ pub fn candidate_pdf_dirs(app: &tauri::AppHandle) -> Vec<PathBuf> {
     }
 
     let cfg = load_pdf_watch_config(app);
-    let seed = load_pdf_watch_seed();
-    let mut dirs: Vec<PathBuf> = Vec::new();
+    let mut dirs = ccc_core_candidate_dirs(app);
 
-    if let Ok(user_profile) = std::env::var("USERPROFILE") {
-        let base = PathBuf::from(&user_profile);
-        push_if_exists(&mut dirs, base.join("Downloads"));
-        push_if_exists(&mut dirs, base.join("Desktop"));
-        push_if_exists(&mut dirs, base.join("Documents"));
-        push_if_exists(&mut dirs, base.join("OneDrive").join("Desktop"));
-        push_if_exists(&mut dirs, base.join("OneDrive").join("Documents"));
-    }
-
-    // CCC ONE / CCCIS — common local roots (shop may use network drives or custom export dirs instead).
-    if let Ok(pd) = std::env::var("PROGRAMDATA") {
-        let cccis = PathBuf::from(pd).join("CCCInformation Services");
-        push_if_exists(&mut dirs, cccis.clone());
-        push_if_exists(&mut dirs, cccis.join("CCCONE"));
-        push_first_level_subdirs(
-            &mut dirs,
-            &cccis,
-            &["logs", "log", "temp", "tmp", "cache", "installer"],
-        );
-    }
-    push_if_exists(&mut dirs, PathBuf::from(r"C:\CCC\WORKFILES"));
-    // CCC local export root (e.g. Change Request PDFs).
-    push_if_exists(&mut dirs, PathBuf::from(r"C:\CCC"));
-    push_first_level_subdirs(&mut dirs, Path::new(r"C:\CCC"), &[]);
-    // Always include CCC temp so fresh machines watch even before CCC creates the folder.
-    if let Ok(la) = std::env::var("LOCALAPPDATA") {
-        dirs.push(PathBuf::from(la).join("Temp").join("CCC"));
-    }
-
-    // FileWisely / shop ingestion (create folder or add to extra_dirs if elsewhere).
-    #[cfg(windows)]
-    {
-        push_if_exists(&mut dirs, PathBuf::from(r"C:\FileWisely\Incoming"));
-    }
-
-    // Shop-configured paths: keep even if missing so watching starts when the folder is created later.
-    for s in cfg.extra_dirs.iter().chain(seed.extra_dirs.iter()) {
-        let p = PathBuf::from(s.trim());
-        if !p.as_os_str().is_empty() {
-            dirs.push(p);
-        }
+    if cfg.general_document_capture_enabled {
+        dirs.extend(general_user_document_dirs());
     }
 
     dedupe_dirs(dirs)

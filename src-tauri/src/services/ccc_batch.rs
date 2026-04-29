@@ -521,10 +521,10 @@ fn handle_ccc_temp_file_inner(app: &tauri::AppHandle, path: PathBuf, source_tag:
         source_tag
     );
 
-    let eligible = match ext.as_str() {
-        "pdf" => true,
-        "doc" | "docx" | "rtf" => true,
-        _ => false,
+    let eligible = if ext == "pdf" {
+        true
+    } else {
+        converter::is_convertible_office_path(&path)
     };
     if !eligible {
         eprintln!(

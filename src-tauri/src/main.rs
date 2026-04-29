@@ -198,6 +198,29 @@ fn schedule_startup_position_retry(app: &tauri::AppHandle) {
 /// (“Hmmm… can't reach this page”) inside the tiny overlay — users only see a clipped “Hmm” tile.
 static UCE_WEBVIEW_FINAL_ALERT_SHOWN: AtomicBool = AtomicBool::new(false);
 
+/// After the real app UI URL commits once, skip aggressive recovery / poll-timeout failures.
+static UCE_WEBVIEW_UI_STABLE: AtomicBool = AtomicBool::new(false);
+
+fn uce_webview_enter_stable_mode() {
+    if !UCE_WEBVIEW_UI_STABLE.fetch_or(true, Ordering::SeqCst) {
+        eprintln!("UCE_WEBVIEW_ENTERED_STABLE_MODE");
+    }
+}
+
+fn uce_webview_clear_stable_mode() {
+    UCE_WEBVIEW_UI_STABLE.store(false, Ordering::SeqCst);
+}
+
+fn uce_webview_stable_or_loaded_url(url: &str) -> bool {
+    uce_url_looks_like_loaded_app_ui(url) && !uce_url_looks_like_chrome_interstitial_error(url)
+}
+
+fn uce_webview_try_stable_from_navigation_url(url: &str) {
+    if uce_webview_stable_or_loaded_url(url) {
+        uce_webview_enter_stable_mode();
+    }
+}
+
 const UCE_SAFE_OVERLAY_W: u32 = 420;
 const UCE_SAFE_OVERLAY_H: u32 = 220;
 const UCE_TOOLBAR_OVERLAY_W: u32 = 58;
@@ -306,7 +329,7 @@ fn uce_recovery_poll_until_loaded_app_ui(app: &AppHandle, attempt: u32) -> bool 
                 Some(w) => match w.url() {
                     Ok(u) => {
                         let s = u.as_str().to_string();
-                        (uce_url_looks_like_loaded_app_ui(&s), s)
+                        (uce_webview_stable_or_loaded_url(&s), s)
                     }
                     Err(_) => (false, "<url() error>".to_string()),
                 },
@@ -326,6 +349,7 @@ fn uce_recovery_poll_until_loaded_app_ui(app: &AppHandle, attempt: u32) -> bool 
                     attempt,
                     tick + 1
                 );
+                uce_webview_enter_stable_mode();
                 return true;
             }
             Ok((false, url)) => {
@@ -346,7 +370,39 @@ fn uce_recovery_poll_until_loaded_app_ui(app: &AppHandle, attempt: u32) -> bool 
             }
         }
     }
-    false
+
+    // Last-chance read: navigation often commits just after the last poll tick.
+    let (tx, rx) = mpsc::channel::<(bool, String)>();
+    let app_l = app.clone();
+    let app_inner = app_l.clone();
+    if let Err(e) = app_l.run_on_main_thread(move || {
+        let out = match app_inner.get_webview_window("main") {
+            Some(w) => match w.url() {
+                Ok(u) => {
+                    let s = u.as_str().to_string();
+                    (uce_webview_stable_or_loaded_url(&s), s)
+                }
+                Err(_) => (false, "<url() error>".to_string()),
+            },
+            None => (false, "<no main window>".to_string()),
+        };
+        let _ = tx.send(out);
+    }) {
+        eprintln!("[UCE] recovery poll final run_on_main_thread: {e}");
+        return false;
+    }
+    match rx.recv_timeout(RECV_WAIT) {
+        Ok((true, url)) => {
+            eprintln!("UCE_WEBVIEW_LOAD_CONFIRMED_BY_URL {}", url);
+            eprintln!(
+                "UCE_WEBVIEW_CURRENT_URL phase=recovery_poll_final_ok attempt={}",
+                attempt
+            );
+            uce_webview_enter_stable_mode();
+            true
+        }
+        _ => false,
+    }
 }
 
 fn uce_apply_overlay_logical_size(w: &tauri::WebviewWindow, width: u32, height: u32) -> Result<(), String> {
@@ -458,6 +514,7 @@ fn save_tenant_manual_all(
 fn uce_tray_reload_interface(app: &AppHandle) -> Result<(), String> {
     eprintln!("UCE_WEBVIEW_MANUAL_RELOAD");
     UCE_WEBVIEW_FINAL_ALERT_SHOWN.store(false, Ordering::SeqCst);
+    uce_webview_clear_stable_mode();
     let Some(w) = app.get_webview_window("main") else {
         return Err("no main window".to_string());
     };
@@ -616,12 +673,14 @@ fn uce_webview_startup_health_pass(app: AppHandle, pass: u32) {
         pass, url_str
     );
 
-    if uce_url_looks_like_loaded_app_ui(url_str) {
+    if uce_webview_stable_or_loaded_url(url_str) {
+        uce_webview_try_stable_from_navigation_url(url_str);
         return;
     }
 
     if uce_url_looks_like_chrome_interstitial_error(url_str) {
         eprintln!("UCE_WEBVIEW_CHROME_ERROR_DETECTED {}", url_str);
+        uce_webview_clear_stable_mode();
         uce_run_chrome_error_recovery_or_alert(app);
         return;
     }
@@ -646,6 +705,7 @@ fn uce_webview_startup_health_pass(app: AppHandle, pass: u32) {
             url_str
         );
     }
+    uce_webview_clear_stable_mode();
     uce_run_chrome_error_recovery_or_alert(app);
 }
 
@@ -658,6 +718,17 @@ fn uce_run_chrome_error_recovery_or_alert(app: AppHandle) {
         return;
     };
     let url_str = current.as_str();
+
+    if UCE_WEBVIEW_UI_STABLE.load(Ordering::SeqCst)
+        && uce_webview_stable_or_loaded_url(url_str)
+    {
+        eprintln!(
+            "UCE_WEBVIEW_RECOVERY_SKIPPED_STABLE_OK url={}",
+            url_str
+        );
+        return;
+    }
+
     eprintln!("UCE_WEBVIEW_CURRENT_URL phase=recovery_begin {}", url_str);
     if uce_url_looks_like_chrome_interstitial_error(url_str) {
         eprintln!("UCE_WEBVIEW_CHROME_ERROR_DETECTED {}", url_str);
@@ -712,15 +783,20 @@ fn uce_run_chrome_error_recovery_or_alert(app: AppHandle) {
             let _ = app_thread.run_on_main_thread(move || {
                 if let Some(w) = app_snap.get_webview_window("main") {
                     if let Ok(u) = w.url() {
+                        let us = u.as_str();
                         eprintln!(
                             "UCE_WEBVIEW_CURRENT_URL phase=after_reload_try attempt={} {}",
                             att,
-                            u.as_str()
+                            us
                         );
+                        if uce_webview_stable_or_loaded_url(us) {
+                            uce_webview_enter_stable_mode();
+                            return;
+                        }
                         eprintln!(
                             "UCE_WEBVIEW_RELOAD_FAILED attempt={} url={} reason=poll_timeout",
                             att,
-                            u.as_str()
+                            us
                         );
                     }
                 }
@@ -743,7 +819,7 @@ fn uce_webview_finish_recovery_if_still_broken(app: AppHandle) {
     };
     let url_str = current.as_str();
     eprintln!("UCE_WEBVIEW_CURRENT_URL phase=after_retries {}", url_str);
-    if uce_url_looks_like_loaded_app_ui(url_str) {
+    if uce_webview_stable_or_loaded_url(url_str) {
         return;
     }
     eprintln!("UCE_WEBVIEW_RELOAD_FAILED after_all_retries url={}", url_str);
@@ -1932,8 +2008,10 @@ pub fn run() {
                     let u = payload.url().as_str();
                     eprintln!("UCE_WEBVIEW_NAVIGATION_FINISHED {}", u);
                     eprintln!("UCE_WEBVIEW_CURRENT_URL {}", u);
+                    uce_webview_try_stable_from_navigation_url(u);
                     if uce_url_looks_like_chrome_interstitial_error(u) {
                         eprintln!("UCE_WEBVIEW_CHROME_ERROR_DETECTED {}", u);
+                        uce_webview_clear_stable_mode();
                     }
                 }
             }

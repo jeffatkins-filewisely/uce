@@ -6801,8 +6801,10 @@ async function updateUceHealthStrip() {
     ? "Uploads (PDF): delayed — no recent auto-send (check folder / context)"
     : `Uploads: ${up.label}`;
   const uceLine = "UCE: running";
+  const captureHint =
+    "Non-CCC: save or print to a PDF in Documents or Downloads to capture (when general watch is on).";
   const bannerDetail = buildBlockingBannerDetail(printerOk, uploadsOk, up, stale);
-  uceHealthStrip.title = `${printerLine}\n${uceLine}\n${uploadLine}`;
+  uceHealthStrip.title = `${printerLine}\n${uceLine}\n${uploadLine}\n${captureHint}`;
   uceHealthStrip.setAttribute(
     "aria-label",
     printerOk && uploadsOk
@@ -6821,7 +6823,7 @@ async function updateUceHealthStrip() {
     uceBlockingBannerText.textContent = bannerMsg;
   }
   if (uceBlockingBanner) {
-    uceBlockingBanner.title = `${printerLine}\n${uceLine}\n${uploadLine}`;
+    uceBlockingBanner.title = `${printerLine}\n${uceLine}\n${uploadLine}\n${captureHint}`;
     uceBlockingBanner.setAttribute("aria-label", bannerMsg);
   }
 

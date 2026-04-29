@@ -201,8 +201,10 @@ pub fn is_convertible_office_path(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
         .map(|e| {
-            let e = e.to_lowercase();
-            e == "doc" || e == "docx" || e == "rtf"
+            matches!(
+                e.to_lowercase().as_str(),
+                "doc" | "docx" | "rtf" | "xls" | "xlsx" | "xlsm" | "ppt" | "pptx" | "odt" | "ods" | "odp"
+            )
         })
         .unwrap_or(false)
 }
@@ -226,7 +228,7 @@ enum ClaimKind {
 impl ClaimKind {
     fn validate(&self, path: &Path) -> Result<(), String> {
         match self {
-            Self::Office if !is_office_doc(path) => Err("Not a .doc, .docx, or .rtf file".into()),
+            Self::Office if !is_office_doc(path) => Err("Not a convertible Office document".into()),
             Self::Pdf if !is_pdf(path) => Err("Not a PDF".into()),
             _ => Ok(()),
         }
@@ -765,7 +767,7 @@ pub(crate) fn convert_staged_office_to_pdf(
         return Err("Staged Office file does not exist".into());
     }
     if !is_office_doc(staged_path) {
-        return Err("Not a convertible Office file (.doc, .docx, .rtf)".into());
+        return Err("Not a convertible Office file".into());
     }
     fs::create_dir_all(out_dir).map_err(|e| format!("create outdir: {e}"))?;
 
