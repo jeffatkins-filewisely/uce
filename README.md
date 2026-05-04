@@ -22,6 +22,10 @@ After install, users should not need to paste the UUID manually if the web app o
 
 Example anchor/button: `href="uce://connect?business_id=${businessId}"` (or redirect to that URL from your edge function). UCE registers the `uce` scheme on Windows; a running instance receives the link via the single-instance + deep-link plugins.
 
+## Ingestion pipeline (desktop → FileWisely backend)
+
+**`docs/INGESTION_PIPELINE.md`** — end-to-end flow (watch → `read_pdf_file` → POST), **JSON field semantics**, and a **checklist for FileWisely/ingest** (provenance, `source_type` mapping, idempotency, classification). Point backend engineers there when wiring `uce_events` / capture inbox / Theo.
+
 ## FileWisely PDF printer (Windows)
 
 Prepare **Bullzip PDF Printer** for silent capture to `C:\FileWisely\Incoming\` (admin required). From the **repository root**:
