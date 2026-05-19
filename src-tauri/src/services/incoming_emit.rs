@@ -7,6 +7,7 @@ use std::path::Path;
 use std::time::UNIX_EPOCH;
 use tauri::Emitter;
 
+use crate::services::capture_context::{self, CaptureContext};
 use crate::services::pipeline_stage_diag;
 
 #[derive(Clone, Serialize)]
@@ -18,6 +19,9 @@ pub struct IncomingFileEvent {
     pub modified_unix_ms: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file_size: Option<u64>,
+    /// Foreground + folder provenance sampled when the file was accepted for upload.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capture_context: Option<CaptureContext>,
 }
 
 fn stat_for_emit(path: &Path) -> (Option<i64>, Option<u64>) {
@@ -46,6 +50,15 @@ pub fn is_fw_incoming_pdf_path(path: &str) -> bool {
 }
 
 pub fn emit_uce_incoming_pdf(app: &tauri::AppHandle, path_str: String) {
+    emit_uce_incoming_pdf_detailed(app, path_str, "incoming_pdf", None);
+}
+
+pub fn emit_uce_incoming_pdf_detailed(
+    app: &tauri::AppHandle,
+    path_str: String,
+    trigger_kind: &str,
+    watch_folder_rule: Option<&str>,
+) {
     eprintln!(
         "UCE_RUST_EMIT_INCOMING_BEFORE path={}",
         path_str
@@ -53,6 +66,15 @@ pub fn emit_uce_incoming_pdf(app: &tauri::AppHandle, path_str: String) {
     pipeline_stage_diag::record_emit_incoming(&path_str);
     let p = Path::new(&path_str);
     let (modified_unix_ms, file_size) = stat_for_emit(p);
+    let capture_context = Some(capture_context::build_capture_context(
+        Some(app),
+        Some(p),
+        trigger_kind,
+        watch_folder_rule,
+    ));
+    if let Some(ref ctx) = capture_context {
+        capture_context::log_capture_context("emit", &path_str, ctx);
+    }
     eprintln!(
         "UCE_RUST_EMIT_INCOMING path={} event=uce-incoming-file kind=pdf fw_named={} modified_unix_ms={:?} file_size={:?}",
         path_str,
@@ -81,6 +103,7 @@ pub fn emit_uce_incoming_pdf(app: &tauri::AppHandle, path_str: String) {
         kind: "pdf",
         modified_unix_ms,
         file_size,
+        capture_context,
     };
 
     let app_nudge = app.clone();

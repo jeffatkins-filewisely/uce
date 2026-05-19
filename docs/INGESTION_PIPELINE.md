@@ -15,7 +15,7 @@ This document describes what **UCE (this repo)** does through HTTP POST, and wha
 | **Folder rule** | `pdf_watch_config::resolve_office_source_rule` | Longest-prefix match on watch roots (e.g. `general_downloads`, `ccc_temp`, `filewisely_incoming`) |
 | General-folder filters | `pdf_watch_config.rs` | Ignores patterns (e.g. broad `%TEMP%` except `Temp\CCC`), min bytes for `general_*` |
 | PDF stability | `wait_for_pdf_file_stable` | Avoids 0-byte / half-written files |
-| Emit to UI | `incoming_emit::emit_uce_incoming_pdf` | Event `uce-incoming-file` + optional `modified_unix_ms`, `file_size`; 2s later `uce-upload-pipeline-nudge` |
+| Emit to UI | `incoming_emit::emit_uce_incoming_pdf_detailed` | Event `uce-incoming-file` + optional `modified_unix_ms`, `file_size`, **`capture_context`** (foreground + folder rule at emit); 2s later `uce-upload-pipeline-nudge` |
 | Office files | `process_filewisely_office_incoming` → converter / printer | Produces PDF then same emit path |
 
 ### A.2 Read bytes → POST (JS + Rust IPC)
@@ -24,7 +24,7 @@ This document describes what **UCE (this repo)** does through HTTP POST, and wha
 |------|-----------|--------|
 | Listener | `src/main.js` | `listen("uce-incoming-file")` |
 | Upload orchestration | `checkAutoPdfUpload`, `uploadFwPdfCore`, optional `uceForceUploadIncomingPdf` | Debounce, list merge, dedupe |
-| Read file | `invoke("read_pdf_file", …)` → `main.rs` | Base64 PDF + canonical `file_path` |
+| Read file | `invoke("read_pdf_file", …)` → `main.rs` | Base64 PDF + canonical `file_path` + **`source_app` / `window_title`** (re-sampled at read) |
 | IPC ACL | `src-tauri/permissions/uce-tenant-connection.toml` | `read_pdf_file` must stay allowed |
 | HTTP | `uploadCapture` → `fetch(getBackendUploadUrl())` | Supabase-style anon JWT headers |
 

@@ -162,7 +162,12 @@ fn process_filewisely_office_incoming(app: tauri::AppHandle, path: PathBuf, matc
             path_str
         );
         log_general_pdf_captured_if_needed(matched_rule, &path_str);
-        incoming_emit::emit_uce_incoming_pdf(&app, path_str);
+        incoming_emit::emit_uce_incoming_pdf_detailed(
+            &app,
+            path_str,
+            "office_convert",
+            Some(matched_rule),
+        );
         return;
     }
     match converter::ingest_office_incoming_to_pdf(
@@ -187,7 +192,12 @@ fn process_filewisely_office_incoming(app: tauri::AppHandle, path: PathBuf, matc
             }
             let path_str = pdf_out.to_string_lossy().to_string();
             log_general_pdf_captured_if_needed(matched_rule, &path_str);
-            incoming_emit::emit_uce_incoming_pdf(&app, path_str);
+            incoming_emit::emit_uce_incoming_pdf_detailed(
+                &app,
+                path_str,
+                "office_convert",
+                Some(matched_rule),
+            );
         }
         Err(e) if e == converter::DUPLICATE_OFFICE_PIPELINE_SKIPPED => {
             eprintln!(
@@ -362,7 +372,12 @@ fn handle_path(app: &tauri::AppHandle, path: std::path::PathBuf) {
                 Some(format!("kind=pdf matched_rule={matched_rule}")),
             );
             log_general_pdf_captured_if_needed(matched_rule, &path_str);
-            incoming_emit::emit_uce_incoming_pdf(app, path_str);
+            incoming_emit::emit_uce_incoming_pdf_detailed(
+                app,
+                path_str,
+                "watcher_pdf",
+                Some(matched_rule),
+            );
         }
         "office" => {
             let office_disp = path.to_string_lossy().into_owned();

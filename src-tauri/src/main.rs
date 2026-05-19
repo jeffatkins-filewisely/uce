@@ -68,6 +68,14 @@ struct PdfCaptureResponse {
     file_path: String,
     message: String,
     captured_at_unix_ms: i64,
+    source_app: String,
+    window_title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    foreground_sampled_at_unix_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    watch_folder_rule: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    trigger_kind: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -1392,12 +1400,24 @@ async fn wait_for_recent_pdf(
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as i64;
+            let out_path = path.to_string_lossy().to_string();
+            let ctx = services::capture_context::build_capture_context(
+                Some(&app),
+                Some(path.as_path()),
+                "wait_for_recent_pdf",
+                None,
+            );
             return Ok(PdfCaptureResponse {
                 success: true,
                 image_base64: pdf_base64,
-                file_path: path.to_string_lossy().to_string(),
+                file_path: out_path,
                 message: "PDF captured from recent export.".to_string(),
                 captured_at_unix_ms,
+                source_app: ctx.source_app,
+                window_title: ctx.window_title,
+                foreground_sampled_at_unix_ms: ctx.foreground_sampled_at_unix_ms,
+                watch_folder_rule: ctx.watch_folder_rule,
+                trigger_kind: ctx.trigger_kind,
             });
         }
 
@@ -1449,7 +1469,7 @@ fn uce_log_pdf_lifecycle(phase: String, path: String, success: Option<bool>) {
 }
 
 #[tauri::command]
-fn read_pdf_file(path: String) -> Result<PdfCaptureResponse, String> {
+fn read_pdf_file(app: tauri::AppHandle, path: String) -> Result<PdfCaptureResponse, String> {
     let file_path = PathBuf::from(path);
     if !file_path.exists() {
         return Err("PDF file not found".to_string());
@@ -1472,6 +1492,13 @@ fn read_pdf_file(path: String) -> Result<PdfCaptureResponse, String> {
         .unwrap_or(file_path.clone())
         .to_string_lossy()
         .to_string();
+    let ctx = services::capture_context::build_capture_context(
+        Some(&app),
+        Some(Path::new(&out_path)),
+        "read_pdf",
+        None,
+    );
+    services::capture_context::log_capture_context("read_pdf", &out_path, &ctx);
     eprintln!("[UCE][pipeline] READ_PDF_OK path={}", out_path);
     Ok(PdfCaptureResponse {
         success: true,
@@ -1479,6 +1506,11 @@ fn read_pdf_file(path: String) -> Result<PdfCaptureResponse, String> {
         file_path: out_path,
         message: "PDF captured from background watcher.".to_string(),
         captured_at_unix_ms,
+        source_app: ctx.source_app,
+        window_title: ctx.window_title,
+        foreground_sampled_at_unix_ms: ctx.foreground_sampled_at_unix_ms,
+        watch_folder_rule: ctx.watch_folder_rule,
+        trigger_kind: ctx.trigger_kind,
     })
 }
 
@@ -1751,22 +1783,30 @@ fn get_last_observed_context(app: tauri::AppHandle) -> Result<LastObservedContex
     };
     let workflow_kind = workflow_kind_from_rule_id(&matched_rule);
     let preferred_capture_mode = preferred_capture_mode_for_rule(&matched_rule);
+    let (mem_app, mem_title) = if !memory.last_context_key.is_empty() {
+        let mut parts = memory.last_context_key.splitn(2, '|');
+        (
+            parts.next().unwrap_or("").to_string(),
+            parts.next().unwrap_or("").to_string(),
+        )
+    } else {
+        (String::new(), String::new())
+    };
+    let source_app = if mem_app.is_empty() {
+        "unknown".to_string()
+    } else {
+        mem_app
+    };
+    let window_title = if !memory.last_window_title.is_empty() {
+        memory.last_window_title.clone()
+    } else if !mem_title.is_empty() {
+        mem_title
+    } else {
+        "unknown".to_string()
+    };
     Ok(LastObservedContext {
-        source_app: if memory.last_context_key.is_empty() {
-            "unknown".to_string()
-        } else {
-            memory
-                .last_context_key
-                .split('|')
-                .next()
-                .unwrap_or("unknown")
-                .to_string()
-        },
-        window_title: if memory.last_window_title.is_empty() {
-            "unknown".to_string()
-        } else {
-            memory.last_window_title
-        },
+        source_app,
+        window_title,
         matched_rule,
         workflow_kind,
         preferred_capture_mode,

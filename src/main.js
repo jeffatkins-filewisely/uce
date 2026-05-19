@@ -197,7 +197,61 @@ const fwPathsSeenFromIncoming = new Set();
 const pendingIncomingPdfPathByKey = new Map();
 /** Rust-provided meta from `uce-incoming-file` payload (mtime + size) — bypasses `list_pdf_metas_since` vs clock/`since` mismatches. */
 const pendingSyntheticIncomingMetaByKey = new Map();
+/** Emit-time foreground/folder context from Rust `capture_context` on `uce-incoming-file`. */
+const pendingCaptureContextByKey = new Map();
 const MAX_PENDING_INCOMING_PDFS = 64;
+
+function isUnknownMetaField(v) {
+  const s = String(v ?? "").trim();
+  return !s || s.toLowerCase() === "unknown";
+}
+
+function takePendingCaptureContext(path) {
+  const k = fwKeyPath(path);
+  const ctx = pendingCaptureContextByKey.get(k) || null;
+  pendingCaptureContextByKey.delete(k);
+  return ctx;
+}
+
+/**
+ * Merge upload metadata: emit-time context → read_pdf/capture_screen → polled memory.
+ * @returns {{ sourceApp: string, windowTitle: string, emitContext: object|null }}
+ */
+function resolveUploadMetadata(capturePayload, contextSnapshot, emitCaptureContext) {
+  const layers = [
+    emitCaptureContext,
+    capturePayload,
+    contextSnapshot,
+  ].filter(Boolean);
+
+  const pick = (field) => {
+    for (const layer of layers) {
+      const v = layer?.[field];
+      if (!isUnknownMetaField(v)) return String(v).trim();
+    }
+    for (const layer of layers) {
+      const v = layer?.[field];
+      if (v != null && String(v).trim()) return String(v).trim();
+    }
+    return "unknown";
+  };
+
+  return {
+    sourceApp: pick("source_app"),
+    windowTitle: pick("window_title"),
+    emitContext: emitCaptureContext || null,
+    foregroundSampledAtUnixMs:
+      emitCaptureContext?.foreground_sampled_at_unix_ms ??
+      capturePayload?.foreground_sampled_at_unix_ms ??
+      null,
+    watchFolderRule:
+      emitCaptureContext?.watch_folder_rule ??
+      capturePayload?.watch_folder_rule ??
+      null,
+    triggerKind:
+      emitCaptureContext?.trigger_kind ?? capturePayload?.trigger_kind ?? null,
+  };
+}
 
 function reportUploadSkip(reason) {
   console.info(`UCE_UPLOAD_SKIPPED reason=${reason}`);
@@ -323,13 +377,15 @@ async function uploadFwPdfCore(rawPath, meta, source) {
         read_pdf_file_path: pipelinePath,
       });
     }
+    const emitContext = takePendingCaptureContext(pipelinePath);
     const contextSnapshot = await getUploadContextSnapshot();
     const uploadResult = await uploadCapture(
       capture,
       contextSnapshot,
       "pdf",
       "auto_pdf_folder",
-      pipelinePath
+      pipelinePath,
+      emitContext
     );
     try {
       await invoke("uce_log_pdf_lifecycle", {
@@ -5492,12 +5548,16 @@ async function uploadCapture(
   contextSnapshot,
   selectedCaptureMode,
   captureSource = "unknown",
-  fwPipelinePath = null
+  fwPipelinePath = null,
+  emitCaptureContext = null
 ) {
-  const sourceApp =
-    contextSnapshot?.source_app || capturePayload?.source_app || "unknown";
-  const windowTitle =
-    contextSnapshot?.window_title || capturePayload?.window_title || "unknown";
+  const meta = resolveUploadMetadata(
+    capturePayload,
+    contextSnapshot,
+    emitCaptureContext
+  );
+  const sourceApp = meta.sourceApp;
+  const windowTitle = meta.windowTitle;
   const matchedRule =
     contextSnapshot?.matched_rule || capturePayload?.matched_rule || "none";
   const bucket = contextSnapshot?.bucket || "unknown";
@@ -5521,6 +5581,10 @@ async function uploadCapture(
   /** Same disk path as `file_path` for backends that persist `source_path` / provenance. */
   const sourcePathForPayload =
     isPdf && pathForPayload ? String(pathForPayload) : pathForPayload || "";
+
+  console.info(
+    `[UCE] UPLOAD_METADATA path=${pathForPayload || "n/a"} source_app=${sourceApp} window_title=${windowTitle} source_path=${sourcePathForPayload || "n/a"} source_hint=${sourceHint} trigger_kind=${meta.triggerKind ?? "n/a"} watch_folder_rule=${meta.watchFolderRule ?? "n/a"} sampled_at=${meta.foregroundSampledAtUnixMs ?? "n/a"} capture_source=${captureSource}`
+  );
 
   if (fwPipelinePath) {
     await logPipeline("MATCHING_STARTED", fwPipelinePath, {
@@ -5599,6 +5663,9 @@ async function uploadCapture(
       capture_source: captureSource,
       source_hint: sourceHint,
       desktop_document_subtype: docSubtype || "unknown",
+      foreground_sampled_at_unix_ms: meta.foregroundSampledAtUnixMs,
+      watch_folder_rule: meta.watchFolderRule,
+      trigger_kind: meta.triggerKind,
     },
   };
 
@@ -5811,7 +5878,9 @@ async function handleCapture() {
       capture,
       contextSnapshot,
       selectedMode,
-      "button_screenshot"
+      "button_screenshot",
+      null,
+      null
     );
     const status = uploadResult?.status ? ` (${uploadResult.status})` : "";
     const eventId = uploadResult?.event_id ? ` #${uploadResult.event_id}` : "";
@@ -5897,13 +5966,15 @@ async function uceForceUploadIncomingPdf(rawPath, syntheticMeta) {
     console.info(`UCE_UPLOAD_STARTED path=${meta.file_path} trace=uce_force_incoming`);
     const capture = await invoke("read_pdf_file", { path: meta.file_path });
     const pipelinePath = capture?.file_path || meta.file_path;
+    const emitContext = takePendingCaptureContext(pipelinePath);
     const contextSnapshot = await getUploadContextSnapshot();
     const uploadResult = await uploadCapture(
       capture,
       contextSnapshot,
       "pdf",
       "uce_force_incoming",
-      pipelinePath
+      pipelinePath,
+      emitContext
     );
     try {
       await invoke("uce_log_pdf_lifecycle", {
@@ -6212,13 +6283,15 @@ async function checkAutoPdfUpload(source = "poll") {
         console.info(`UCE_UPLOAD_STARTED path=${newest.file_path}`);
         const capture = await invoke("read_pdf_file", { path: newest.file_path });
         const pipelinePath = capture?.file_path || newest.file_path;
+        const emitContext = takePendingCaptureContext(pipelinePath);
         const contextSnapshot = await getUploadContextSnapshot();
         const uploadResult = await uploadCapture(
           capture,
           contextSnapshot,
           "pdf",
           "auto_pdf_folder",
-          pipelinePath
+          pipelinePath,
+          emitContext
         );
         try {
           await invoke("uce_log_pdf_lifecycle", {
@@ -7468,6 +7541,14 @@ async function uceRuntimePrinterCheck() {
           while (pendingSyntheticIncomingMetaByKey.size > MAX_PENDING_INCOMING_PDFS) {
             const firstK = pendingSyntheticIncomingMetaByKey.keys().next().value;
             pendingSyntheticIncomingMetaByKey.delete(firstK);
+          }
+        }
+        const capCtx = p?.capture_context;
+        if (capCtx && typeof capCtx === "object") {
+          pendingCaptureContextByKey.set(pk, capCtx);
+          while (pendingCaptureContextByKey.size > MAX_PENDING_INCOMING_PDFS) {
+            const firstK = pendingCaptureContextByKey.keys().next().value;
+            pendingCaptureContextByKey.delete(firstK);
           }
         }
         while (pendingIncomingPdfPathByKey.size > MAX_PENDING_INCOMING_PDFS) {

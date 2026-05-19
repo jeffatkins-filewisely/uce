@@ -211,7 +211,7 @@ fn process_queued_job(app: &tauri::AppHandle, job: QueuedJob) {
                 job.staged.display()
             );
             let path_str = job.staged.to_string_lossy().to_string();
-            incoming_emit::emit_uce_incoming_pdf(app, path_str);
+            incoming_emit::emit_uce_incoming_pdf_detailed(app, path_str, "ccc_temp", Some("ccc_temp"));
             note_processed(&job.basename);
         }
         QueuedKind::Office {
@@ -234,7 +234,7 @@ fn process_queued_job(app: &tauri::AppHandle, job: QueuedJob) {
                         pdf.display()
                     );
                     let path_str = pdf.to_string_lossy().to_string();
-                    incoming_emit::emit_uce_incoming_pdf(app, path_str);
+                    incoming_emit::emit_uce_incoming_pdf_detailed(app, path_str, "ccc_temp", Some("ccc_temp"));
                     note_processed(&job.basename);
                 }
                 Err(e) => {
@@ -698,7 +698,7 @@ fn handle_ccc_temp_file_inner(app: &tauri::AppHandle, path: PathBuf, source_tag:
             pdf_path.display()
         );
         let path_str = pdf_path.to_string_lossy().to_string();
-        incoming_emit::emit_uce_incoming_pdf(app, path_str);
+        incoming_emit::emit_uce_incoming_pdf_detailed(app, path_str, "ccc_temp", Some("ccc_temp"));
         return;
     }
 

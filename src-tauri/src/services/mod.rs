@@ -1,3 +1,4 @@
+pub mod capture_context;
 pub mod capture_pipeline_status;
 pub mod ccc_autodiscovery;
 pub mod ccc_batch;
