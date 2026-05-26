@@ -26,6 +26,10 @@ Example anchor/button: `href="uce://connect?business_id=${businessId}"` (or redi
 
 **`docs/INGESTION_PIPELINE.md`** — end-to-end flow (watch → `read_pdf_file` → POST), **JSON field semantics**, and a **checklist for FileWisely/ingest** (provenance, `source_type` mapping, idempotency, classification). Point backend engineers there when wiring `uce_events` / capture inbox / Theo.
 
+## CCC package sync (Sidekick → local CCC Import folders)
+
+**`docs/CCC_PACKAGE_SYNC.md`** — claim batch → download → write → ack for crew photos headed to CCC ONE. Covers first-run **CCC Import** folder (`C:\FileWisely\CCC Import\` default), heartbeat `ccc_package_*` fields, 15s polling, tray status, and error/ack rules. Backend: `ccc-package-claim-batch` and `ccc-package-ack` edge functions.
+
 ## FileWisely PDF printer (Windows)
 
 Prepare **Bullzip PDF Printer** for silent capture to `C:\FileWisely\Incoming\` (admin required). From the **repository root**:

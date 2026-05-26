@@ -20,6 +20,7 @@ pub mod file_normalizer;
 pub mod pipeline_stage_diag;
 pub mod printer_alert_policy;
 pub mod printer_check;
+pub mod printer_bullzip_ini;
 pub mod print_watcher;
 pub mod processed_retention;
 pub mod startup_shortcut;

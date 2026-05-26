@@ -194,6 +194,7 @@ pub fn repair_filewisely_printer(search_roots: Vec<PathBuf>) -> Result<RepairPri
         .map(|r| r.filewisely_exact)
         .unwrap_or(false)
     {
+        super::printer_bullzip_ini::ensure_silent_bullzip_ini();
         return Ok(RepairPrinterResult {
             ok: true,
             message: "Printer already present".into(),
@@ -251,6 +252,7 @@ pub fn repair_filewisely_printer(search_roots: Vec<PathBuf>) -> Result<RepairPri
         "after rename/check: FileWisely Printer present = {}",
         ok
     ));
+    super::printer_bullzip_ini::ensure_silent_bullzip_ini();
     let msg = if ok {
         "Repair completed"
     } else {

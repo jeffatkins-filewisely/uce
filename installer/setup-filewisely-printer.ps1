@@ -41,23 +41,9 @@ if ([string]::IsNullOrWhiteSpace($BullzipExe)) {
     $BullzipExe = Join-Path $ScriptDir "pdf-printer\bullzip.exe"
 }
 
-# Bullzip queue config - system-wide defaults (path per FileWisely spec)
+. (Join-Path $ScriptDir "bullzip-silent-ini.ps1")
 $GlobalIniDir = Join-Path $env:ProgramData "Bullzip\PDF Printer"
 $GlobalIniPath = Join-Path $GlobalIniDir "global.ini"
-
-# Exact content required for FileWisely (do not alter keys without testing Bullzip).
-# Single-quoted here-string so <date>/<time> tokens stay literal for Bullzip.
-$GlobalIniContent = @'
-[PDF Printer]
-Output=C:\FileWisely\Incoming\<date>_<time>_<docname>.pdf
-ShowSaveAS=never
-ShowSettings=never
-ShowPDF=no
-ConfirmOverwrite=no
-DisableOptionDialog=yes
-OpenFolder=no
-OpenPDF=no
-'@
 
 try {
     Write-Host ""
@@ -99,18 +85,10 @@ try {
         Write-WarnLine "No installer at '$BullzipExe' - skipped silent install (add pdf-printer\bullzip.exe)"
     }
 
-    # 3) global.ini - backup existing, then write
-    Write-Host "Config: $GlobalIniPath"
-    if (-not (Test-Path -LiteralPath $GlobalIniDir)) {
-        New-Item -ItemType Directory -Force -Path $GlobalIniDir | Out-Null
-    }
-    if (Test-Path -LiteralPath $GlobalIniPath) {
-        $bak = "$GlobalIniPath.bak-$(Get-Date -Format 'yyyyMMddHHmmss')"
-        Copy-Item -LiteralPath $GlobalIniPath -Destination $bak -Force
-        Write-Host "  (backed up previous to $(Split-Path $bak -Leaf))"
-    }
-    Set-Content -LiteralPath $GlobalIniPath -Value $GlobalIniContent -Encoding UTF8
-    Write-Ok "Config written"
+    # 3) All Bullzip INI paths (PDF Writer queues, legacy Bullzip path, per-user settings)
+    Write-Host "Config: silent INI (no open-after-print) for Incoming=$IncomingRoot"
+    Set-FileWiselyBullzipSilentIni -IncomingDir $IncomingRoot
+    Write-Ok "Config written (all paths)"
 
     # 4) Rename default Bullzip queue to FileWisely Printer (if needed)
     $target = Get-Printer -Name $PrinterDisplayName -ErrorAction SilentlyContinue

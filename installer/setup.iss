@@ -52,8 +52,10 @@ Name: "skipprinter"; Description: "Skip virtual PDF printer install (recommended
 ; Payload must live next to this .iss under installer\
 Source: "install.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "seed-uce-pdf-watch.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "bullzip-silent-ini.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "setup-filewisely-printer.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "verify-filewisely-printer.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "repair-bullzip-silent.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "config.json.example"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "uce\*"; DestDir: "{app}\uce"; Flags: recursesubdirs createallsubdirs ignoreversion
 Source: "pdf-printer\*"; DestDir: "{app}\pdf-printer"; Flags: recursesubdirs createallsubdirs ignoreversion skipifsourcedoesntexist

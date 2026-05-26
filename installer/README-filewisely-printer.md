@@ -13,7 +13,7 @@ Prepares **Bullzip PDF Printer** for FileWisely with **no Save As dialog** and o
 | Item | Location |
 |------|----------|
 | Incoming folder | `C:\FileWisely\Incoming\` |
-| Bullzip global defaults | `C:\ProgramData\Bullzip\PDF Printer\global.ini` |
+| Bullzip silent INI | `bullzip-silent-ini.ps1` → `PDF Writer\*\global.ini`, `Bullzip\PDF Printer\global.ini`, `%APPDATA%\...\settings.ini` (`ShowPDF=no`, `OpenPDF=no`, `OpenFolder=no`) |
 | Printer display name | **FileWisely Printer** (rename from default Bullzip queue when possible) |
 
 ## Run setup (elevated)

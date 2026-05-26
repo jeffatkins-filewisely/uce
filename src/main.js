@@ -735,6 +735,14 @@ async function sendUceHeartbeat() {
       invoke("uce_machine_name"),
       invoke("uce_os_info"),
     ]);
+    let cccPackageRoot = "";
+    let cccPackageCapable = false;
+    try {
+      cccPackageRoot = await invoke("ccc_import_get_package_root");
+      cccPackageCapable = !!(cccPackageRoot && String(cccPackageRoot).trim());
+    } catch (_) {
+      /* CCC Import folder not configured yet */
+    }
     const body = {
       action: "heartbeat",
       business_id: bid,
@@ -743,6 +751,8 @@ async function sendUceHeartbeat() {
       agent_version: version || "0.0.0",
       os_info: typeof osInfo === "string" ? osInfo : "",
       user_id: "",
+      ccc_package_capable: cccPackageCapable,
+      ccc_package_root: cccPackageCapable ? String(cccPackageRoot).trim() : "",
     };
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), UCE_HEARTBEAT_FETCH_MS);
@@ -819,6 +829,13 @@ async function sendUceHeartbeat() {
 
 /** Per-user Startup shortcut (MSI-safe) + heartbeat interval when tenant + ingest URL are set. */
 async function ensureUceDesktopPresence() {
+  try {
+    await invoke("uce_sync_device_id", { deviceId: getDeviceId() }).catch((e) =>
+      console.warn("[UCE] uce_sync_device_id:", e)
+    );
+  } catch (e) {
+    console.warn("[UCE] device id sync:", e);
+  }
   try {
     if (getBusinessId() && getBackendUploadUrl() && getSupabaseAnonKey()) {
       await invoke("uce_ensure_startup_shortcut").catch((e) =>

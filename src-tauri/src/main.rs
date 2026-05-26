@@ -12,6 +12,9 @@ mod types;
 mod uce_webview_url;
 mod connection_diagnostics;
 mod watch_policy_sync;
+mod ccc_import_settings;
+mod ccc_package_sync;
+mod device_id;
 
 use context_rules::{
     all_built_in_rules, candidate_patterns, preferred_capture_mode_for_rule,
@@ -38,7 +41,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tauri::menu::{Menu, MenuItem};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{TrayIconBuilder, TrayIconId};
 use tauri::webview::{PageLoadEvent, WebviewWindowBuilder};
 use tauri::WebviewUrl;
@@ -545,6 +548,66 @@ fn uce_try_build_tray(app: &tauri::AppHandle) {
             return;
         }
     };
+    let ccc_sep = match PredefinedMenuItem::separator(app) {
+        Ok(i) => i,
+        Err(e) => {
+            eprintln!("[UCE] tray CCC separator: {e}");
+            return;
+        }
+    };
+    let ccc_sync_status = match MenuItem::with_id(
+        app,
+        "uce-tray-ccc-sync-status",
+        &ccc_package_sync::tray_ccc_sync_label(),
+        false,
+        None::<&str>,
+    ) {
+        Ok(i) => i,
+        Err(e) => {
+            eprintln!("[UCE] tray CCC sync status: {e}");
+            return;
+        }
+    };
+    ccc_package_sync::register_ccc_sync_status_item(ccc_sync_status.clone());
+    let ccc_open_root = match MenuItem::with_id(
+        app,
+        "uce-tray-ccc-open-root",
+        "Open CCC Import folder",
+        true,
+        None::<&str>,
+    ) {
+        Ok(i) => i,
+        Err(e) => {
+            eprintln!("[UCE] tray Open CCC Import: {e}");
+            return;
+        }
+    };
+    let ccc_open_ro = match MenuItem::with_id(
+        app,
+        "uce-tray-ccc-open-ro",
+        "Open this RO's folder",
+        false,
+        None::<&str>,
+    ) {
+        Ok(i) => i,
+        Err(e) => {
+            eprintln!("[UCE] tray Open RO folder: {e}");
+            return;
+        }
+    };
+    let ccc_change_root = match MenuItem::with_id(
+        app,
+        "uce-tray-ccc-change-root",
+        "Change CCC Import folder…",
+        true,
+        None::<&str>,
+    ) {
+        Ok(i) => i,
+        Err(e) => {
+            eprintln!("[UCE] tray Change CCC Import: {e}");
+            return;
+        }
+    };
     let copy_i = match MenuItem::with_id(
         app,
         "uce-tray-copy-report",
@@ -587,7 +650,16 @@ fn uce_try_build_tray(app: &tauri::AppHandle) {
     let menu = match Menu::with_items(
         app,
         &[
-            &status_i, &connect_i, &copy_i, &reload_i, &quit_i,
+            &status_i,
+            &connect_i,
+            &ccc_sep,
+            &ccc_sync_status,
+            &ccc_open_root,
+            &ccc_open_ro,
+            &ccc_change_root,
+            &copy_i,
+            &reload_i,
+            &quit_i,
         ],
     ) {
         Ok(m) => m,
@@ -611,6 +683,20 @@ fn uce_try_build_tray(app: &tauri::AppHandle) {
                 "uce-tray-connect" => {
                     if let Err(e) = uce_open_connection_doctor(app, "connect") {
                         eprintln!("[UCE] tray Connect: {e}");
+                    }
+                }
+                "uce-tray-ccc-open-root" => {
+                    if let Err(e) = ccc_import_settings::ccc_import_open_root_folder(app.clone()) {
+                        eprintln!("[UCE] tray Open CCC Import folder: {e}");
+                    }
+                }
+                "uce-tray-ccc-change-root" => {
+                    match ccc_import_settings::ccc_import_pick_and_set_root(app.clone()) {
+                        Ok(path) => {
+                            eprintln!("[UCE] CCC Import folder set: {path}");
+                            ccc_package_sync::refresh_tray_ccc_sync_item(app);
+                        }
+                        Err(e) => eprintln!("[UCE] tray Change CCC Import folder: {e}"),
                     }
                 }
                 "uce-tray-copy-report" => {
@@ -2176,6 +2262,18 @@ pub fn run() {
                 }
             }
             uce_try_build_tray(app.handle());
+            {
+                let h = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(800));
+                    let h2 = h.clone();
+                    let _ = h.run_on_main_thread(move || {
+                        ccc_import_settings::ensure_first_run_configured(&h2);
+                        ccc_package_sync::refresh_tray_ccc_sync_item(&h2);
+                    });
+                });
+            }
+            ccc_package_sync::spawn_ccc_package_sync(app.handle().clone());
 
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_skip_taskbar(true);
@@ -2241,6 +2339,7 @@ pub fn run() {
                 services::office_intercept::spawn_office_winword_telemetry(h);
                 services::flight_recorder::spawn();
                 services::processed_retention::spawn();
+                services::printer_bullzip_ini::ensure_silent_bullzip_ini();
             }
             Ok(())
         })
@@ -2303,6 +2402,11 @@ pub fn run() {
             connection_diagnostics::uce_get_connection_diagnostics,
             connection_diagnostics::uce_test_ingest_connection,
             connection_diagnostics::uce_copy_diagnostic_report,
+            device_id::uce_sync_device_id,
+            device_id::uce_get_device_id,
+            ccc_import_settings::ccc_import_get_package_root,
+            ccc_import_settings::ccc_import_pick_and_set_root,
+            ccc_import_settings::ccc_import_open_root_folder,
             uce_pipeline_upload_stage,
             uce_ccc_capture_test,
             uce_ccc_run_autodiscovery,

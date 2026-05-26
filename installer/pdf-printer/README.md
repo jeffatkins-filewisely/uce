@@ -35,7 +35,7 @@ After you **rename** the printer to **FileWisely Printer**, Windows may also use
 **`install.ps1`** (elevated) writes **`global.ini`** to **both** queues with:
 
 - `Output=C:\FileWisely\Incoming\<date>_<time>_<docname>.pdf`
-- `ShowSaveAS=never`, `ShowSettings=never`, `ShowPDF=no`, `ConfirmOverwrite=no`
+- `ShowSaveAS=never`, `ShowSettings=never`, `ShowPDF=no`, `OpenPDF=no`, `OpenFolder=no`, `ConfirmOverwrite=no`
 
 See [Hide the print dialog](https://www.bullzip.com/kb/hide-the-print-dialog/) (Bullzip KB).
 

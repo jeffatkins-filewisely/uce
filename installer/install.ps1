@@ -99,47 +99,7 @@ function Ensure-FileWiselyPrinter {
     return $false
 }
 
-function Set-BullzipSilentGlobalIni {
-    param(
-        [Parameter(Mandatory = $true)][string]$IncomingDir
-    )
-    $pdPdfWriter = Join-Path $env:ProgramData "PDF Writer"
-    $queues = @("Bullzip PDF Printer", "FileWisely Printer")
-    $inc = $IncomingDir.TrimEnd('\')
-    $outLine = "Output=$inc" + '\<date>_<time>_<docname>.pdf'
-    $iniBody = @"
-[PDF Printer]
-$outLine
-ShowSaveAS=never
-ShowSettings=never
-ShowPDF=no
-DisableOptionDialog=yes
-ConfirmOverwrite=no
-"@
-    foreach ($q in $queues) {
-        $dir = Join-Path $pdPdfWriter $q
-        if (-not (Test-Path $dir)) {
-            try {
-                New-Item -ItemType Directory -Force -Path $dir | Out-Null
-            }
-            catch {
-                Write-Warning "Could not create $dir : $_"
-                continue
-            }
-        }
-        $dest = Join-Path $dir "global.ini"
-        try {
-            if (Test-Path $dest) {
-                Copy-Item $dest "$dest.bak-$(Get-Date -Format yyyyMMddHHmmss)" -Force -ErrorAction SilentlyContinue
-            }
-            Set-Content -Path $dest -Value $iniBody -Encoding UTF8
-            Write-Host "OK: Silent Bullzip global.ini -> $dest"
-        }
-        catch {
-            Write-Warning "Could not write $dest : $_"
-        }
-    }
-}
+# Set-BullzipSilentGlobalIni — see bullzip-silent-ini.ps1 (dot-sourced below after $Root is set).
 
 try {
 
@@ -193,34 +153,12 @@ try {
             Write-Host "OK: Detected printer(s): $($pdfPrinters.Name -join ', ')"
         }
 
-        $bullIniDir = Join-Path $env:APPDATA "Bullzip\PDF Printer"
-        if (-not (Test-Path $bullIniDir)) {
-            New-Item -ItemType Directory -Force -Path $bullIniDir | Out-Null
+        $bullIniShared = Join-Path $Root "bullzip-silent-ini.ps1"
+        if (-not (Test-Path -LiteralPath $bullIniShared)) {
+            Write-Warning "Missing $bullIniShared — cannot apply silent Bullzip INI."
         }
-        $exampleIni = Join-Path $Root "pdf-printer\bullzip-settings.example.ini"
-        $targetIni = Join-Path $bullIniDir "settings.ini"
-        if (Test-Path $exampleIni) {
-            if (-not (Test-Path $targetIni)) {
-                Copy-Item $exampleIni $targetIni -Force
-                Write-Host "Wrote starter Bullzip settings: $targetIni (merge tokens per KB; set Output=$Incoming)"
-            }
-            else {
-                Write-Host "Bullzip settings.ini already exists — merge pdf-printer\bullzip-settings.example.ini manually if needed."
-            }
-        }
-
-        Start-Sleep -Seconds 1
-        if ($ranPrinterSetup -and -not (Test-Path $targetIni)) {
-            $msg = "Bullzip settings.ini missing at $targetIni — Save dialog may appear until configured."
-            if ($Strict) {
-                Fail-Install $msg
-            }
-            else {
-                Write-Warning $msg
-            }
-        }
-        elseif (Test-Path $targetIni) {
-            Write-Host "OK: Printer config present: $targetIni"
+        else {
+            . $bullIniShared
         }
 
         if (-not (Get-Printer -Name $PrinterDisplayName -ErrorAction SilentlyContinue)) {
@@ -232,12 +170,14 @@ try {
         # staff choose it when they want capture, or UCE watches folders for PDFs saved elsewhere.
 
         Write-Host ""
-        Write-Host "Bullzip: configuring silent PDF output to $Incoming (no Save As dialog)..."
+        Write-Host "Bullzip: configuring silent PDF output to $Incoming (no Save As / no open-after-print)..."
         try {
-            Set-BullzipSilentGlobalIni -IncomingDir $Incoming
+            if (Get-Command Set-FileWiselyBullzipSilentIni -ErrorAction SilentlyContinue) {
+                Set-FileWiselyBullzipSilentIni -IncomingDir $Incoming
+            }
         }
         catch {
-            Write-Warning "Bullzip silent global.ini: $_"
+            Write-Warning "Bullzip silent INI: $_"
         }
 
         # Also apply FileWisely ProgramData\Bullzip\PDF Printer\global.ini + verify (same as standalone setup-filewisely-printer.ps1).

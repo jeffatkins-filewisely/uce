@@ -37,8 +37,10 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
 ; Same layout as repo installer\ (setup script resolves pdf-printer\bullzip.exe next to itself)
+Source: "bullzip-silent-ini.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "setup-filewisely-printer.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "verify-filewisely-printer.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "repair-bullzip-silent.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "pdf-printer\*"; DestDir: "{app}\pdf-printer"; Flags: recursesubdirs createallsubdirs ignoreversion skipifsourcedoesntexist
 
 [Run]

@@ -1,4 +1,4 @@
-# Verify FileWisely PDF printer prerequisites (folder, global.ini, printer name). No admin required for read-only checks.
+# Verify FileWisely PDF printer prerequisites (folder, silent INI keys, printer name).
 
 param(
     [string]$IncomingRoot = "C:\FileWisely\Incoming",
@@ -7,10 +7,19 @@ param(
 )
 
 $ErrorActionPreference = "Continue"
+$ScriptDir = $PSScriptRoot
+. (Join-Path $ScriptDir "bullzip-silent-ini.ps1")
 
 if ([string]::IsNullOrWhiteSpace($GlobalIniPath)) {
     $GlobalIniPath = Join-Path $env:ProgramData "Bullzip\PDF Printer\global.ini"
 }
+
+$iniPaths = @(
+    $GlobalIniPath,
+    (Join-Path $env:ProgramData "PDF Writer\FileWisely Printer\global.ini"),
+    (Join-Path $env:ProgramData "PDF Writer\Bullzip PDF Printer\global.ini"),
+    (Join-Path $env:APPDATA "Bullzip\PDF Printer\settings.ini")
+)
 
 $results = @{
     Folder = $false
@@ -38,14 +47,26 @@ else {
     Write-Fail "Folder missing"
 }
 
-# --- global.ini ---
-Write-Host "Checking config: $GlobalIniPath"
-if (Test-Path -LiteralPath $GlobalIniPath) {
-    $results.Config = $true
-    Write-Ok "global.ini exists"
+# --- Silent INI (at least one path must have full silent keys) ---
+Write-Host "Checking silent INI (ShowPDF=no, OpenPDF=no, OpenFolder=no, no Save As)..."
+$configOk = $false
+foreach ($p in $iniPaths) {
+    if (Test-Path -LiteralPath $p) {
+        if (Test-FileWiselyBullzipIniContent -Path $p) {
+            Write-Ok "Silent keys present: $p"
+            $configOk = $true
+        }
+        else {
+            Write-Fail "INI exists but missing silent keys: $p"
+        }
+    }
+    else {
+        Write-Host "  (skip missing) $p"
+    }
 }
-else {
-    Write-Fail "global.ini missing"
+$results.Config = $configOk
+if (-not $configOk) {
+    Write-Fail "No INI with required silent keys (run setup-filewisely-printer.ps1 elevated)"
 }
 
 # --- Printer display name ---

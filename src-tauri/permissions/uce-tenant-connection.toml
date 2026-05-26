@@ -27,4 +27,9 @@ commands.allow = [
   "uce_ui_popup_suppressed_trace",
   "uce_sync_suppress_all_popups",
   "uce_get_env_suppress_all_popups",
+  "uce_sync_device_id",
+  "uce_get_device_id",
+  "ccc_import_get_package_root",
+  "ccc_import_pick_and_set_root",
+  "ccc_import_open_root_folder",
 ]
