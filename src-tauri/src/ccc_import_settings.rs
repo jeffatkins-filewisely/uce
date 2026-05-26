@@ -89,27 +89,22 @@ pub fn set_ccc_package_root(app: &AppHandle, root: &str) -> Result<String, Strin
     Ok(normalized)
 }
 
-/// First launch: prompt for CCC Import root (Windows folder dialog); default on cancel.
-pub fn ensure_first_run_configured(app: &AppHandle) {
+/// Every machine uses the same hardcoded CCC Import root (no folder picker).
+pub fn ensure_hardcoded_ccc_import_root(app: &AppHandle) {
+    if let Err(e) = fs::create_dir_all(DEFAULT_CCC_PACKAGE_ROOT) {
+        eprintln!(
+            "[UCE] create CCC Import root {}: {e}",
+            DEFAULT_CCC_PACKAGE_ROOT
+        );
+    }
     let settings = load_settings(app);
-    if settings.first_run_completed && effective_ccc_package_root(&settings).is_some() {
+    if settings.first_run_completed
+        && effective_ccc_package_root(&settings).as_deref() == Some(DEFAULT_CCC_PACKAGE_ROOT)
+    {
         return;
     }
-
-    let initial = if settings.ccc_package_root.trim().is_empty() {
-        DEFAULT_CCC_PACKAGE_ROOT.to_string()
-    } else {
-        settings.ccc_package_root.clone()
-    };
-
-    let chosen = pick_folder_dialog(
-        "Where should FileWisely save CCC Import folders?",
-        &initial,
-    )
-    .unwrap_or_else(|| initial);
-
-    if let Err(e) = set_ccc_package_root(app, &chosen) {
-        eprintln!("[UCE] first-run CCC Import folder: {e}");
+    if let Err(e) = set_ccc_package_root(app, DEFAULT_CCC_PACKAGE_ROOT) {
+        eprintln!("[UCE] hardcoded CCC Import folder: {e}");
     }
 }
 
@@ -171,7 +166,14 @@ pub fn open_folder_in_explorer(path: &str) -> Result<(), String> {
 #[tauri::command]
 pub fn ccc_import_get_package_root(app: AppHandle) -> Result<String, String> {
     let settings = load_settings(&app);
-    effective_ccc_package_root(&settings).ok_or_else(|| "ccc_package_root not configured".to_string())
+    effective_ccc_package_root(&settings)
+        .ok_or_else(|| "ccc_package_root not configured".to_string())
+}
+
+/// Always the shop-standard path (webview should not prompt for a folder when this is set).
+#[tauri::command]
+pub fn ccc_import_hardcoded_root() -> String {
+    DEFAULT_CCC_PACKAGE_ROOT.to_string()
 }
 
 #[tauri::command]

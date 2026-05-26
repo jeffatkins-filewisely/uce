@@ -103,8 +103,11 @@ const UPLOAD_TIMEOUT_MS = 10000;
 /** `uce-ingest` heartbeat — keeps portal device Active + `agent_version` (see plan). */
 const UCE_HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
 const UCE_HEARTBEAT_FETCH_MS = 15000;
+/** Hardcoded on desktop — matches `ccc_import_settings::DEFAULT_CCC_PACKAGE_ROOT`. */
+const UCE_CCC_IMPORT_ROOT = "C:\\FileWisely\\CCC Import";
 let uceHeartbeatIntervalId = null;
 let uceLoggedFirstHeartbeatSuccess = false;
+let uceTraySyncPaused = false;
 /** Active window poll for context + RO monitor (CCC title + leading digits). */
 const CONTEXT_POLL_MS = 500;
 const AUTO_PDF_POLL_MS = 3000;
@@ -725,6 +728,7 @@ async function initTenantContext() {
  * or `VITE_UCE_UPLOAD_URL` when unset. Best-effort. `getDeviceId` is defined later; safe at call time.
  */
 async function sendUceHeartbeat() {
+  if (uceTraySyncPaused) return;
   const bid = getBusinessId();
   const upload = getBackendUploadUrl();
   const key = getSupabaseAnonKey();
@@ -735,13 +739,15 @@ async function sendUceHeartbeat() {
       invoke("uce_machine_name"),
       invoke("uce_os_info"),
     ]);
-    let cccPackageRoot = "";
-    let cccPackageCapable = false;
+    let cccPackageRoot = UCE_CCC_IMPORT_ROOT;
+    let cccPackageCapable = true;
     try {
-      cccPackageRoot = await invoke("ccc_import_get_package_root");
-      cccPackageCapable = !!(cccPackageRoot && String(cccPackageRoot).trim());
+      const hardcoded = await invoke("ccc_import_hardcoded_root");
+      if (hardcoded && String(hardcoded).trim()) {
+        cccPackageRoot = String(hardcoded).trim();
+      }
     } catch (_) {
-      /* CCC Import folder not configured yet */
+      /* desktop shell uses UCE_CCC_IMPORT_ROOT */
     }
     const body = {
       action: "heartbeat",
@@ -7604,6 +7610,23 @@ async function uceRuntimePrinterCheck() {
   }
 
   void refreshPrinterPolicyCache();
+  try {
+    await listen("uce:pause", () => {
+      uceTraySyncPaused = true;
+      if (uceHeartbeatIntervalId !== null) {
+        clearInterval(uceHeartbeatIntervalId);
+        uceHeartbeatIntervalId = null;
+      }
+      console.info("[UCE] tray: sync paused (CCC package + heartbeat)");
+    });
+    await listen("uce:resume", () => {
+      uceTraySyncPaused = false;
+      console.info("[UCE] tray: sync resumed");
+      void ensureUceDesktopPresence();
+    });
+  } catch (e) {
+    console.warn("[UCE] uce:pause / uce:resume listeners:", e);
+  }
   /* Schedule first — never block on uce_check (spooler/PowerShell can stall) or tenant dialog. */
   setTimeout(
     () => void selfHealPrinter(true),

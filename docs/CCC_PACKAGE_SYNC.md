@@ -6,16 +6,15 @@ Backend edge functions (FileWisely repo) must be deployed before sync works; thi
 
 ---
 
-## 1. First-run settings
+## 1. CCC Import folder (hardcoded)
 
 | Item | Behavior |
 |------|----------|
-| **Prompt** | On first launch (no `first_run_completed` in `settings.json`): Windows folder dialog — *"Where should FileWisely save CCC Import folders?"* |
-| **Default** | `C:\FileWisely\CCC Import\` (used if the user cancels the picker) |
-| **Storage** | `%AppData%\<app>\settings.json` next to `uce-tenant.json` |
-| **Tray** | **Change CCC Import folder…** re-opens the picker |
+| **Path** | `C:\FileWisely\CCC Import\` on every shop PC (no folder picker) |
+| **Storage** | `%AppData%\<app>\settings.json` records the same path + `first_run_completed` |
+| **Tray** | **Open CCC Import Folder** — see `docs/TRAY_SILENT_INSTALL.md` |
 
-Rust: `src-tauri/src/ccc_import_settings.rs`
+Rust: `src-tauri/src/ccc_import_settings.rs` → `ensure_hardcoded_ccc_import_root()`
 
 ---
 

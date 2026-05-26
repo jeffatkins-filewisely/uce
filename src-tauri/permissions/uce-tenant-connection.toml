@@ -30,6 +30,7 @@ commands.allow = [
   "uce_sync_device_id",
   "uce_get_device_id",
   "ccc_import_get_package_root",
+  "ccc_import_hardcoded_root",
   "ccc_import_pick_and_set_root",
   "ccc_import_open_root_folder",
 ]

@@ -7,23 +7,59 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tauri::menu::MenuItem;
-use tauri::{AppHandle, Wry};
+use tauri::{AppHandle, Emitter, Wry};
 
 const POLL_INTERVAL_SECS: u64 = 15;
 const CLAIM_LIMIT: u32 = 25;
 const HTTP_TIMEOUT_SECS: u64 = 120;
 
 static SYNCING_COUNT: AtomicU32 = AtomicU32::new(0);
+static SYNC_PAUSED: AtomicBool = AtomicBool::new(false);
 static OFFLINE: Mutex<bool> = Mutex::new(false);
 static CCC_SYNC_STATUS_ITEM: OnceLock<MenuItem<Wry>> = OnceLock::new();
+static PAUSE_SYNC_ITEM: OnceLock<MenuItem<Wry>> = OnceLock::new();
+static RESUME_SYNC_ITEM: OnceLock<MenuItem<Wry>> = OnceLock::new();
 
 /// Clone stored when the tray menu is built (`main.rs`).
 pub fn register_ccc_sync_status_item(item: MenuItem<Wry>) {
     let _ = CCC_SYNC_STATUS_ITEM.set(item);
+}
+
+pub fn register_pause_resume_items(pause: MenuItem<Wry>, resume: MenuItem<Wry>) {
+    let _ = PAUSE_SYNC_ITEM.set(pause);
+    let _ = RESUME_SYNC_ITEM.set(resume);
+    refresh_pause_resume_menu();
+}
+
+pub fn is_sync_paused() -> bool {
+    SYNC_PAUSED.load(Ordering::Relaxed)
+}
+
+pub fn set_sync_paused(app: &AppHandle, paused: bool) {
+    SYNC_PAUSED.store(paused, Ordering::Relaxed);
+    refresh_pause_resume_menu();
+    refresh_tray_ccc_sync_item(app);
+    if paused {
+        let _ = app.emit("uce:pause", ());
+        eprintln!("CCC_PACKAGE_SYNC_PAUSED");
+    } else {
+        let _ = app.emit("uce:resume", ());
+        eprintln!("CCC_PACKAGE_SYNC_RESUMED");
+    }
+}
+
+pub fn refresh_pause_resume_menu() {
+    let paused = is_sync_paused();
+    if let Some(item) = PAUSE_SYNC_ITEM.get() {
+        let _ = item.set_enabled(!paused);
+    }
+    if let Some(item) = RESUME_SYNC_ITEM.get() {
+        let _ = item.set_enabled(paused);
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -60,6 +96,9 @@ struct AckBody<'a> {
 }
 
 pub fn tray_ccc_sync_label() -> String {
+    if is_sync_paused() {
+        return "CCC sync: Paused".to_string();
+    }
     if *OFFLINE.lock().unwrap_or_else(|e| e.into_inner()) {
         return "CCC sync: Offline".to_string();
     }
@@ -364,7 +403,9 @@ async fn poll_once(app: &AppHandle) {
 pub fn spawn_ccc_package_sync(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         loop {
-            poll_once(&app).await;
+            if !is_sync_paused() {
+                poll_once(&app).await;
+            }
             tokio::time::sleep(Duration::from_secs(POLL_INTERVAL_SECS)).await;
         }
     });

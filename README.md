@@ -28,7 +28,9 @@ Example anchor/button: `href="uce://connect?business_id=${businessId}"` (or redi
 
 ## CCC package sync (Sidekick → local CCC Import folders)
 
-**`docs/CCC_PACKAGE_SYNC.md`** — claim batch → download → write → ack for crew photos headed to CCC ONE. Covers first-run **CCC Import** folder (`C:\FileWisely\CCC Import\` default), heartbeat `ccc_package_*` fields, 15s polling, tray status, and error/ack rules. Backend: `ccc-package-claim-batch` and `ccc-package-ack` edge functions.
+**`docs/CCC_PACKAGE_SYNC.md`** — claim batch → download → write → ack for crew photos headed to CCC ONE. Covers hardcoded **`C:\FileWisely\CCC Import\`**, heartbeat `ccc_package_*` fields, 15s polling, tray status, and error/ack rules. Backend: `ccc-package-claim-batch` and `ccc-package-ack` edge functions.
+
+**`docs/TRAY_SILENT_INSTALL.md`** — per-user NSIS install (no UAC), tray menu (Open UCE / Open CCC Import / Pause·Resume sync), auto-start, close-to-tray.
 
 ## FileWisely PDF printer (Windows)
 
