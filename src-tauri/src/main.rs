@@ -16,6 +16,9 @@ mod ccc_import_settings;
 mod ccc_package_sync;
 mod device_id;
 mod device_health;
+mod health_watchdog;
+mod local_agent_probe;
+mod upload_spool;
 
 use context_rules::{
     all_built_in_rules, candidate_patterns, preferred_capture_mode_for_rule,
@@ -242,7 +245,7 @@ const UCE_DEV_VITE_ADDR: &str = "127.0.0.1:5173";
 /// Matches `tauri.conf.json` `build.devUrl` when the embedded config omits `dev_url` at runtime.
 const UCE_FALLBACK_DEV_APP_URL: &str = "http://127.0.0.1:5173/";
 
-fn uce_url_looks_like_chrome_interstitial_error(url: &str) -> bool {
+pub(crate) fn uce_url_looks_like_chrome_interstitial_error(url: &str) -> bool {
     let lower = url.to_ascii_lowercase();
     lower.starts_with("chrome-error:") || lower.contains("chromewebdata")
 }
@@ -724,9 +727,7 @@ fn uce_try_build_tray(app: &tauri::AppHandle) {
             }
         });
 
-    if let Some(icon) = app.default_window_icon() {
-        builder = builder.icon(icon.clone());
-    }
+    builder = builder.icon(device_health::embedded_tray_icon_initial());
 
     if let Err(e) = builder.build(app) {
         eprintln!("[UCE] tray icon build failed: {e}");
@@ -797,7 +798,7 @@ fn uce_webview_startup_health_pass(app: AppHandle, pass: u32) {
 }
 
 /// Resize to a readable overlay, reload up to 5×, then MessageBox if the UI still will not load.
-fn uce_run_chrome_error_recovery_or_alert(app: AppHandle) {
+pub(crate) fn uce_run_chrome_error_recovery_or_alert(app: AppHandle) {
     let Some(w) = app.get_webview_window("main") else {
         return;
     };
@@ -2211,8 +2212,11 @@ pub fn run() {
     {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             eprintln!("[UCE] single-instance argv: {:?}", argv);
+            let app_show = app.clone();
+            let _ = app.run_on_main_thread(move || {
+                uce_tray_show_main(&app_show);
+            });
             // When UCE is already running, Windows may start a second process with `uce://…` on argv.
-            // Forward those URLs to the webview so `tryApplyBusinessIdFromUrls` runs (browser Connect flow).
             let deeplinks: Vec<String> = argv
                 .into_iter()
                 .filter(|a| {
@@ -2244,6 +2248,7 @@ pub fn run() {
                     eprintln!("UCE_WEBVIEW_NAVIGATION_FINISHED {}", u);
                     eprintln!("UCE_WEBVIEW_CURRENT_URL {}", u);
                     uce_webview_try_stable_from_navigation_url(u);
+                    health_watchdog::note_webview_navigation_ok(u);
                     if uce_url_looks_like_chrome_interstitial_error(u) {
                         eprintln!("UCE_WEBVIEW_CHROME_ERROR_DETECTED {}", u);
                         uce_webview_clear_stable_mode();
@@ -2282,6 +2287,10 @@ pub fn run() {
             }
             ccc_package_sync::spawn_ccc_package_sync(app.handle().clone());
             device_health::spawn_tray_health_refresh_loop(app.handle().clone());
+            upload_spool::init_spool_from_disk(app.handle());
+            upload_spool::spawn_spool_drain_loop(app.handle().clone());
+            health_watchdog::spawn_health_watchdog(app.handle().clone());
+            local_agent_probe::spawn_local_agent_probe(app.handle().clone());
 
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_skip_taskbar(true);
@@ -2410,6 +2419,11 @@ pub fn run() {
             device_health::uce_report_upload_queue_stats,
             device_health::uce_get_device_health_snapshot,
             device_health::uce_refresh_tray_health,
+            upload_spool::uce_spool_enqueue,
+            upload_spool::uce_spool_claim_batch,
+            upload_spool::uce_spool_ack,
+            upload_spool::uce_spool_fail,
+            upload_spool::uce_spool_pending_count,
             connection_diagnostics::uce_get_connection_diagnostics,
             connection_diagnostics::uce_test_ingest_connection,
             connection_diagnostics::uce_copy_diagnostic_report,

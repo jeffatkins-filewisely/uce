@@ -32,13 +32,15 @@ Tooltip (hover): multi-line status — shop, heartbeat, CCC sync, pending upload
     "ccc_syncing_count": 0,
     "last_ccc_sync_unix_ms": 1710000000000,
     "pending_uploads": 2,
+    "spool_pending": 1,
     "last_upload_unix_ms": 1710000000000,
-    "agent_version": "0.1.54"
+    "last_error": "",
+    "agent_version": "0.1.56"
   }
 }
 ```
 
-**FileWisely backend:** persist `device_health` (or flatten fields) on the device row for admin/support dashboards.
+**FileWisely backend:** persist `device_health` on the device row — implementation in **`backend/`** (migration + `uce-ingest` merge + Lovable table). See `backend/README.md`.
 
 ## IPC
 

@@ -34,6 +34,10 @@ Example anchor/button: `href="uce://connect?business_id=${businessId}"` (or redi
 
 **`docs/DEVICE_HEALTH.md`** — tray green/yellow/red, hover tooltip, `device_health` on heartbeat for remote diagnostics.
 
+**`docs/PHASE_B_RELIABILITY.md`** — durable upload spool (retry after failures) + health watchdog (stale heartbeat nudge, webview recovery log).
+
+**`backend/`** — FileWisely / Lovable deploy pack: SQL migration, `uce-ingest` heartbeat upsert, portal **UCE Devices** table component.
+
 ## FileWisely PDF printer (Windows)
 
 Prepare **Bullzip PDF Printer** for silent capture to `C:\FileWisely\Incoming\` (admin required). From the **repository root**:

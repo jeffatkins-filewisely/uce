@@ -142,6 +142,14 @@ pub fn uce_record_heartbeat_outcome(
         message: msg.chars().take(2000).collect(),
     };
     write_outcome(&app, &rec)?;
+    if !payload.success {
+        let err = if msg.is_empty() {
+            format!("heartbeat failed: {}", payload.category)
+        } else {
+            format!("heartbeat {}: {}", payload.category, msg)
+        };
+        crate::device_health::set_last_error(err);
+    }
     crate::device_health::refresh_tray(&app);
     Ok(())
 }

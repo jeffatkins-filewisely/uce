@@ -3582,6 +3582,82 @@ let rightPeekActive = false;
 let peekSidePanelMode = null;
 /** Session fingerprints for PDF auto-upload duplicate suppression (`path|mtime`). */
 const uploadedPdfFingerprints = new Set();
+let uploadSpoolBusy = false;
+
+async function enqueueUploadSpool(filePath, fingerprint, source = "auto_pdf_folder") {
+  if (!filePath || !fingerprint) return;
+  try {
+    const n = await invoke("uce_spool_enqueue", {
+      filePath,
+      fingerprint,
+      source,
+    });
+    console.info(`[UCE] upload spool enqueue pending=${n} path=${filePath}`);
+    reportUploadQueueStatsToRust();
+    void refreshTrayConnectionTooltip();
+  } catch (e) {
+    console.warn("[UCE] uce_spool_enqueue:", e);
+  }
+}
+
+async function processUploadSpool(source = "interval") {
+  if (uceTraySyncPaused || uploadSpoolBusy) return;
+  let batch;
+  try {
+    batch = await invoke("uce_spool_claim_batch", { limit: 5 });
+  } catch (e) {
+    console.warn("[UCE] uce_spool_claim_batch:", e);
+    return;
+  }
+  if (!Array.isArray(batch) || batch.length === 0) return;
+  uploadSpoolBusy = true;
+  console.info(`[UCE] upload spool drain (${source}) count=${batch.length}`);
+  try {
+    for (const entry of batch) {
+      const path = entry?.filePath || entry?.file_path;
+      const fp = entry?.fingerprint;
+      const spoolSource = entry?.source || "spool_retry";
+      if (!path || !fp) continue;
+      try {
+        const capture = await invoke("read_pdf_file", { path });
+        const contextSnapshot = await getUploadContextSnapshot();
+        const uploadResult = await uploadCapture(
+          capture,
+          contextSnapshot,
+          "pdf",
+          spoolSource,
+          path,
+          null
+        );
+        if (!uploadResult?.skipped) {
+          uploadedPdfFingerprints.add(fp);
+          uceLastUploadUnixMs = Date.now();
+          await invoke("uce_spool_ack", { id: entry.id || fp });
+          console.info(`[UCE] spool upload OK: ${path.split(/[\\/]/).pop()}`);
+        } else {
+          const msg = uploadResult?.message || "skipped";
+          if (/no endpoint|not configured|local only/i.test(msg)) {
+            await invoke("uce_spool_ack", { id: entry.id || fp });
+          } else {
+            await invoke("uce_spool_fail", { id: entry.id || fp, error: msg });
+          }
+        }
+      } catch (err) {
+        const errText =
+          typeof err === "string" ? err : err?.message || String(err);
+        await invoke("uce_spool_fail", {
+          id: entry.id || fp,
+          error: errText,
+        }).catch(() => {});
+        console.warn(`[UCE] spool upload failed: ${path}`, err);
+      }
+    }
+  } finally {
+    uploadSpoolBusy = false;
+    reportUploadQueueStatsToRust();
+    void refreshTrayConnectionTooltip();
+  }
+}
 /** RO status cache: one entry; refreshed on context + 60s poll. */
 let roStatusCache = { ro: "", data: null, fetchedAt: 0 };
 let roStatusBackgroundTimer = null;
@@ -6428,6 +6504,7 @@ async function checkAutoPdfUpload(source = "poll") {
         const pdfName = newest.file_path.split(/[\\/]/).pop() || "file.pdf";
         errors.push({ name: pdfName, err: oneErr });
         console.error(`[UCE] Upload failed: ${pdfName}`, oneErr);
+        void enqueueUploadSpool(newest.file_path, fp, "auto_pdf_folder");
       }
     }
 
@@ -7645,6 +7722,20 @@ async function uceRuntimePrinterCheck() {
     console.warn("[UCE] uce-upload-pipeline-nudge listener:", e);
   }
 
+  try {
+    await listen("uce:spool-drain", (e) => {
+      const n = e?.payload ?? 0;
+      console.info(`[UCE] uce:spool-drain pending=${n}`);
+      void processUploadSpool("spool-drain");
+    });
+    await listen("uce:watchdog-heartbeat-nudge", () => {
+      console.info("[UCE] watchdog: stale heartbeat — forcing heartbeat");
+      void sendUceHeartbeat();
+    });
+  } catch (e) {
+    console.warn("[UCE] spool/watchdog listeners:", e);
+  }
+
   void refreshPrinterPolicyCache();
   try {
     await listen("uce:pause", () => {
@@ -7779,6 +7870,8 @@ async function uceRuntimePrinterCheck() {
     () => void checkAutoPdfUpload("backup"),
     INCOMING_UPLOAD_BACKUP_MS
   );
+  setTimeout(() => void processUploadSpool("startup"), 8_000);
+  setInterval(() => void processUploadSpool("interval"), 60_000);
   setInterval(() => void fwRescueUploaderTick(), FW_RESCUE_SCAN_MS);
   setInterval(() => void logFwParitySummary(), FW_PARITY_LOG_MS);
   if (WATCH_POLICY_URL && getBusinessId()) {

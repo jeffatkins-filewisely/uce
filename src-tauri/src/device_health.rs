@@ -5,6 +5,7 @@ use crate::connection_diagnostics;
 use crate::tenant_config;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicI64, AtomicU32, Ordering};
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::image::Image;
 use tauri::tray::TrayIconId;
@@ -13,8 +14,27 @@ use tauri::AppHandle;
 const HEARTBEAT_STALE_MS: i64 = 12 * 60 * 1000; // 12 min (heartbeat interval is 5 min)
 
 static PENDING_UPLOADS: AtomicU32 = AtomicU32::new(0);
+static SPOOL_PENDING: AtomicU32 = AtomicU32::new(0);
 static LAST_UPLOAD_UNIX_MS: AtomicI64 = AtomicI64::new(0);
 static LAST_CCC_SYNC_UNIX_MS: AtomicI64 = AtomicI64::new(0);
+static LAST_ERROR: Mutex<String> = Mutex::new(String::new());
+
+/// Latest diagnostic string for portal `device_health.last_error` (heartbeat, spool, panic).
+pub fn set_last_error(msg: impl Into<String>) {
+    let s = msg.into();
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    let capped: String = trimmed.chars().take(500).collect();
+    if let Ok(mut g) = LAST_ERROR.lock() {
+        *g = capped;
+    }
+}
+
+pub fn last_error() -> String {
+    LAST_ERROR.lock().map(|g| g.clone()).unwrap_or_default()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -38,8 +58,23 @@ pub struct DeviceHealthSnapshot {
     pub ccc_syncing_count: u32,
     pub last_ccc_sync_unix_ms: i64,
     pub pending_uploads: u32,
+    pub spool_pending: u32,
     pub last_upload_unix_ms: i64,
     pub agent_version: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub last_error: String,
+}
+
+pub fn set_spool_pending(count: u32) {
+    SPOOL_PENDING.store(count, Ordering::Relaxed);
+}
+
+pub fn note_upload_activity() {
+    LAST_UPLOAD_UNIX_MS.store(now_unix_ms(), Ordering::Relaxed);
+}
+
+pub fn last_ccc_sync_unix_ms() -> i64 {
+    LAST_CCC_SYNC_UNIX_MS.load(Ordering::Relaxed)
 }
 
 fn now_unix_ms() -> i64 {
@@ -109,8 +144,10 @@ pub fn snapshot(app: &AppHandle) -> DeviceHealthSnapshot {
         ccc_syncing_count: ccc_syncing,
         last_ccc_sync_unix_ms: LAST_CCC_SYNC_UNIX_MS.load(Ordering::Relaxed),
         pending_uploads: PENDING_UPLOADS.load(Ordering::Relaxed),
+        spool_pending: SPOOL_PENDING.load(Ordering::Relaxed),
         last_upload_unix_ms: LAST_UPLOAD_UNIX_MS.load(Ordering::Relaxed),
         agent_version: version,
+        last_error: last_error(),
     }
 }
 
@@ -200,8 +237,16 @@ pub fn tray_tooltip(snap: &DeviceHealthSnapshot) -> String {
         )
     };
 
-    let upload_line = if snap.pending_uploads > 0 {
-        format!("Pending uploads: {}", snap.pending_uploads)
+    let upload_line = if snap.pending_uploads > 0 || snap.spool_pending > 0 {
+        let spool = if snap.spool_pending > 0 {
+            format!(", spool {}", snap.spool_pending)
+        } else {
+            String::new()
+        };
+        format!(
+            "Pending uploads: {}{}",
+            snap.pending_uploads, spool
+        )
     } else {
         format!(
             "Pending uploads: 0 (last {})",
@@ -240,6 +285,11 @@ fn icon_for_color(color: TrayHealthColor) -> Image<'static> {
         TrayHealthColor::Yellow => circle_tray_icon(16, 234, 179, 8),
         TrayHealthColor::Red => circle_tray_icon(16, 239, 68, 68),
     }
+}
+
+/// Embedded RGBA tray icon — never rely on a missing bundle PNG (red octagon placeholder).
+pub fn embedded_tray_icon_initial() -> Image<'static> {
+    icon_for_color(TrayHealthColor::Yellow)
 }
 
 /// Update tray tooltip, icon color, and CCC sync menu label.
