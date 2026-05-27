@@ -32,6 +32,8 @@ Example anchor/button: `href="uce://connect?business_id=${businessId}"` (or redi
 
 **`docs/TRAY_SILENT_INSTALL.md`** — per-user NSIS install (no UAC), tray menu (Open UCE / Open CCC Import / Pause·Resume sync), auto-start, close-to-tray.
 
+**`docs/DEVICE_HEALTH.md`** — tray green/yellow/red, hover tooltip, `device_health` on heartbeat for remote diagnostics.
+
 ## FileWisely PDF printer (Windows)
 
 Prepare **Bullzip PDF Printer** for silent capture to `C:\FileWisely\Incoming\` (admin required). From the **repository root**:

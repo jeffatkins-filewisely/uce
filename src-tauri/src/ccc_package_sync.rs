@@ -39,10 +39,18 @@ pub fn is_sync_paused() -> bool {
     SYNC_PAUSED.load(Ordering::Relaxed)
 }
 
+pub fn is_ccc_offline() -> bool {
+    *OFFLINE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+pub fn syncing_count() -> u32 {
+    SYNCING_COUNT.load(Ordering::Relaxed)
+}
+
 pub fn set_sync_paused(app: &AppHandle, paused: bool) {
     SYNC_PAUSED.store(paused, Ordering::Relaxed);
     refresh_pause_resume_menu();
-    refresh_tray_ccc_sync_item(app);
+    crate::device_health::refresh_tray(app);
     if paused {
         let _ = app.emit("uce:pause", ());
         eprintln!("CCC_PACKAGE_SYNC_PAUSED");
@@ -295,7 +303,7 @@ async fn poll_once(app: &AppHandle) {
         Err(e) => {
             eprintln!("[UCE] ccc package sync: tenant: {e}");
             set_offline(true);
-            refresh_tray_ccc_sync_item(app);
+            crate::device_health::refresh_tray(app);
             return;
         }
     };
@@ -304,21 +312,21 @@ async fn poll_once(app: &AppHandle) {
     let token = tenant.anon_key.trim();
     if backend.is_empty() || token.is_empty() {
         set_offline(true);
-        refresh_tray_ccc_sync_item(app);
+        crate::device_health::refresh_tray(app);
         return;
     }
 
     let settings = ccc_import_settings::load_settings(app);
     let Some(root) = effective_ccc_package_root(&settings) else {
         set_offline(true);
-        refresh_tray_ccc_sync_item(app);
+        crate::device_health::refresh_tray(app);
         return;
     };
 
     let Some(base) = edge_functions_v1_base(backend) else {
         eprintln!("[UCE] ccc package sync: cannot derive functions/v1 base from backend_url");
         set_offline(true);
-        refresh_tray_ccc_sync_item(app);
+        crate::device_health::refresh_tray(app);
         return;
     };
 
@@ -326,7 +334,7 @@ async fn poll_once(app: &AppHandle) {
         Some(id) => id,
         None => {
             set_offline(true);
-            refresh_tray_ccc_sync_item(app);
+            crate::device_health::refresh_tray(app);
             return;
         }
     };
@@ -336,7 +344,7 @@ async fn poll_once(app: &AppHandle) {
         Err(e) => {
             eprintln!("[UCE] ccc package sync: http client: {e}");
             set_offline(true);
-            refresh_tray_ccc_sync_item(app);
+            crate::device_health::refresh_tray(app);
             return;
         }
     };
@@ -352,7 +360,7 @@ async fn poll_once(app: &AppHandle) {
         Err(e) => {
             eprintln!("CCC_PACKAGE_CLAIM_NETWORK err={}", e);
             set_offline(true);
-            refresh_tray_ccc_sync_item(app);
+            crate::device_health::refresh_tray(app);
             return;
         }
     };
@@ -366,38 +374,39 @@ async fn poll_once(app: &AppHandle) {
             text.chars().take(200).collect::<String>()
         );
         set_offline(true);
-        refresh_tray_ccc_sync_item(app);
+        crate::device_health::refresh_tray(app);
         return;
     }
 
     set_offline(false);
+    crate::device_health::note_ccc_sync_activity();
 
     let batch: ClaimBatchResponse = match claim_resp.json().await {
         Ok(b) => b,
         Err(e) => {
             eprintln!("CCC_PACKAGE_CLAIM_PARSE err={}", e);
-            refresh_tray_ccc_sync_item(app);
+            crate::device_health::refresh_tray(app);
             return;
         }
     };
 
     if batch.items.is_empty() {
         SYNCING_COUNT.store(0, Ordering::Relaxed);
-        refresh_tray_ccc_sync_item(app);
+        crate::device_health::refresh_tray(app);
         return;
     }
 
     let ack_endpoint = ack_url(&base);
     let count = batch.items.len() as u32;
     SYNCING_COUNT.store(count, Ordering::Relaxed);
-    refresh_tray_ccc_sync_item(app);
+    crate::device_health::refresh_tray(app);
 
     for item in &batch.items {
         process_item(&client, &ack_endpoint, token, &root, item).await;
     }
 
     SYNCING_COUNT.store(0, Ordering::Relaxed);
-    refresh_tray_ccc_sync_item(app);
+    crate::device_health::refresh_tray(app);
 }
 
 pub fn spawn_ccc_package_sync(app: AppHandle) {

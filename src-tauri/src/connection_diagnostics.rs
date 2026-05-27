@@ -51,6 +51,10 @@ fn outcome_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     Ok(dir.join(OUTCOME_FILE))
 }
 
+pub fn heartbeat_outcome(app: &AppHandle) -> HeartbeatOutcomeRecord {
+    read_outcome(app)
+}
+
 fn read_outcome(app: &AppHandle) -> HeartbeatOutcomeRecord {
     let Ok(path) = outcome_path(app) else {
         return HeartbeatOutcomeRecord::default();
@@ -138,6 +142,7 @@ pub fn uce_record_heartbeat_outcome(
         message: msg.chars().take(2000).collect(),
     };
     write_outcome(&app, &rec)?;
+    crate::device_health::refresh_tray(&app);
     Ok(())
 }
 

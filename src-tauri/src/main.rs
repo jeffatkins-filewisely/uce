@@ -15,6 +15,7 @@ mod watch_policy_sync;
 mod ccc_import_settings;
 mod ccc_package_sync;
 mod device_id;
+mod device_health;
 
 use context_rules::{
     all_built_in_rules, candidate_patterns, preferred_capture_mode_for_rule,
@@ -426,22 +427,6 @@ fn uce_bring_overlay_foreground(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-fn uce_tray_tooltip(app: &AppHandle) -> String {
-    match tenant_config::load_tenant_config(app) {
-        Ok(cfg) => {
-            let ok = !cfg.business_id.trim().is_empty()
-                && !cfg.backend_url.trim().is_empty()
-                && !cfg.anon_key.trim().is_empty();
-            if ok {
-                "UCE — Connected (FileWisely)".to_string()
-            } else {
-                "UCE — Not connected — use tray → Connect to FileWisely".to_string()
-            }
-        }
-        Err(_) => "UCE — Not connected".to_string(),
-    }
-}
-
 fn uce_open_connection_doctor(app: &AppHandle, view: &str) -> Result<(), String> {
     let label = "connection-doctor";
     let v = if view == "status" { "status" } else { "connect" };
@@ -488,11 +473,7 @@ fn uce_open_connection_doctor_cmd(app: AppHandle, view: String) -> Result<(), St
 
 #[tauri::command]
 fn uce_refresh_tray_connection_tooltip(app: AppHandle) -> Result<(), String> {
-    let tip = uce_tray_tooltip(&app);
-    let tid = TrayIconId::new("uce-main-tray");
-    if let Some(tray) = app.tray_by_id(&tid) {
-        tray.set_tooltip(Some(tip)).map_err(|e| e.to_string())?;
-    }
+    device_health::refresh_tray(&app);
     Ok(())
 }
 
@@ -692,9 +673,7 @@ fn uce_try_build_tray(app: &tauri::AppHandle) {
         }
     };
 
-    let tooltip = "FileWisely UCE";
     let mut builder = TrayIconBuilder::with_id(TrayIconId::new("uce-main-tray"))
-        .tooltip(tooltip)
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_tray_icon_event(|tray, event| {
@@ -751,6 +730,8 @@ fn uce_try_build_tray(app: &tauri::AppHandle) {
 
     if let Err(e) = builder.build(app) {
         eprintln!("[UCE] tray icon build failed: {e}");
+    } else {
+        device_health::refresh_tray(app);
     }
 }
 
@@ -2293,13 +2274,14 @@ pub fn run() {
             {
                 let h = app.handle().clone();
                 ccc_import_settings::ensure_hardcoded_ccc_import_root(&h);
-                ccc_package_sync::refresh_tray_ccc_sync_item(&h);
+                device_health::refresh_tray(&h);
                 #[cfg(windows)]
                 if let Err(e) = services::startup_shortcut::ensure_filewisely_uce_shortcut() {
                     eprintln!("[UCE] startup autostart: {e}");
                 }
             }
             ccc_package_sync::spawn_ccc_package_sync(app.handle().clone());
+            device_health::spawn_tray_health_refresh_loop(app.handle().clone());
 
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_skip_taskbar(true);
@@ -2425,6 +2407,9 @@ pub fn run() {
             uce_open_connection_doctor_cmd,
             uce_refresh_tray_connection_tooltip,
             connection_diagnostics::uce_record_heartbeat_outcome,
+            device_health::uce_report_upload_queue_stats,
+            device_health::uce_get_device_health_snapshot,
+            device_health::uce_refresh_tray_health,
             connection_diagnostics::uce_get_connection_diagnostics,
             connection_diagnostics::uce_test_ingest_connection,
             connection_diagnostics::uce_copy_diagnostic_report,

@@ -108,6 +108,7 @@ const UCE_CCC_IMPORT_ROOT = "C:\\FileWisely\\CCC Import";
 let uceHeartbeatIntervalId = null;
 let uceLoggedFirstHeartbeatSuccess = false;
 let uceTraySyncPaused = false;
+let uceLastUploadUnixMs = 0;
 /** Active window poll for context + RO monitor (CCC title + leading digits). */
 const CONTEXT_POLL_MS = 500;
 const AUTO_PDF_POLL_MS = 3000;
@@ -723,6 +724,18 @@ async function initTenantContext() {
   void ensureUceDesktopPresence();
 }
 
+function reportUploadQueueStatsToRust() {
+  try {
+    void invoke("uce_report_upload_queue_stats", {
+      pendingUploads:
+        pendingIncomingPdfPathByKey.size + pendingSyntheticIncomingMetaByKey.size,
+      lastUploadUnixMs: uceLastUploadUnixMs > 0 ? uceLastUploadUnixMs : null,
+    });
+  } catch (e) {
+    console.warn("[UCE] uce_report_upload_queue_stats:", e);
+  }
+}
+
 /**
  * POST `action: heartbeat` to the ingest URL (same as captures): tenant `uce-tenant.json`,
  * or `VITE_UCE_UPLOAD_URL` when unset. Best-effort. `getDeviceId` is defined later; safe at call time.
@@ -733,6 +746,7 @@ async function sendUceHeartbeat() {
   const upload = getBackendUploadUrl();
   const key = getSupabaseAnonKey();
   if (!bid || !upload || !key) return;
+  reportUploadQueueStatsToRust();
   try {
     const [version, deviceName, osInfo] = await Promise.all([
       getVersion(),
@@ -749,6 +763,12 @@ async function sendUceHeartbeat() {
     } catch (_) {
       /* desktop shell uses UCE_CCC_IMPORT_ROOT */
     }
+    let deviceHealth = null;
+    try {
+      deviceHealth = await invoke("uce_get_device_health_snapshot");
+    } catch (_) {
+      /* optional */
+    }
     const body = {
       action: "heartbeat",
       business_id: bid,
@@ -759,7 +779,16 @@ async function sendUceHeartbeat() {
       user_id: "",
       ccc_package_capable: cccPackageCapable,
       ccc_package_root: cccPackageCapable ? String(cccPackageRoot).trim() : "",
+      device_health: deviceHealth,
     };
+    try {
+      const health = await invoke("uce_get_device_health_snapshot");
+      if (health && typeof health === "object") {
+        body.device_health = health;
+      }
+    } catch (e) {
+      console.warn("[UCE] device_health snapshot:", e);
+    }
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), UCE_HEARTBEAT_FETCH_MS);
     try {
@@ -781,7 +810,9 @@ async function sendUceHeartbeat() {
           category: categorizeHeartbeatHttpStatus(response.status),
           http_status: response.status,
           message: t.slice(0, 500),
-        }).catch(() => {});
+        })
+          .catch(() => {})
+          .finally(() => void refreshTrayConnectionTooltip());
       } else {
         if (!uceLoggedFirstHeartbeatSuccess) {
           uceLoggedFirstHeartbeatSuccess = true;
@@ -808,6 +839,7 @@ async function sendUceHeartbeat() {
           http_status: response.status,
           message: "",
         }).catch(() => {});
+        void invoke("uce_refresh_tray_health").catch(() => {});
       }
     } finally {
       clearTimeout(timeoutId);
@@ -867,6 +899,8 @@ async function ensureUceDesktopPresence() {
     () => void sendUceHeartbeat(),
     UCE_HEARTBEAT_INTERVAL_MS
   );
+  setInterval(() => reportUploadQueueStatsToRust(), 60_000);
+  reportUploadQueueStatsToRust();
 }
 
 if (typeof window !== "undefined") {
@@ -5799,6 +5833,8 @@ async function uploadCapture(
   }
 
   lastSuccessfulUploadAt = Date.now();
+  uceLastUploadUnixMs = Date.now();
+  reportUploadQueueStatsToRust();
   return responseBody;
 }
 

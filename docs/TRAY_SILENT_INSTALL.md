@@ -53,6 +53,16 @@ Right-click (^ by clock):
 
 **Left-click** tray icon → show UCE (menu does not open on left-click).
 
+### Tray health (green / yellow / red)
+
+| Color | Meaning |
+|-------|---------|
+| Green | Connected, heartbeat OK |
+| Yellow | Paused, CCC offline, or waiting for first heartbeat |
+| Red | Not configured, heartbeat failed, or stale (>12 min) |
+
+Hover tooltip: shop id, last heartbeat, CCC sync, pending uploads, version. See **`docs/DEVICE_HEALTH.md`**.
+
 **Close (X)** on overlay → hides window; process keeps running (watchers, sync, heartbeat).
 
 ---
