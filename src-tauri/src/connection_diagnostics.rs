@@ -9,6 +9,8 @@ use std::time::Duration;
 use tauri::AppHandle;
 use tauri::Manager;
 
+use crate::ccc_import_settings;
+use crate::ccc_package_sync;
 use crate::config::print_config;
 use crate::pdf_watch_config;
 use crate::services::capture_pipeline_status;
@@ -359,6 +361,16 @@ pub fn uce_get_connection_diagnostics(app: AppHandle) -> Result<serde_json::Valu
         "last_heartbeat_message": outcome.message,
         "main_overlay_loaded": main_overlay,
         "capture_pipeline": capture_pipeline_snapshot(&app),
+        "ccc_writer": json!({
+            "ccc_import_root": ccc_import_settings::DEFAULT_CCC_PACKAGE_ROOT,
+            "ccc_import_writable": ccc_package_sync::ccc_import_writable(),
+            "claim_offline": ccc_package_sync::is_ccc_offline(),
+            "sync_paused": ccc_package_sync::is_sync_paused(),
+            "last_claim_error": ccc_package_sync::last_ccc_claim_error(),
+            "last_write_error": ccc_package_sync::last_ccc_write_error(),
+            "last_write_unix_ms": ccc_package_sync::last_ccc_write_unix_ms(),
+            "syncing_count": ccc_package_sync::syncing_count(),
+        }),
     }))
 }
 
@@ -443,7 +455,7 @@ pub async fn uce_test_ingest_connection(
             success: true,
             category: "HEARTBEAT_OK".to_string(),
             http_status: Some(status),
-            message: text.chars().take(500).collect(),
+            message: String::new(),
         };
         let _ = write_outcome(&app, &rec);
         push_recent_log(
@@ -706,6 +718,46 @@ fn format_capture_pipeline_plain(cp: &serde_json::Value) -> String {
     out
 }
 
+fn format_ccc_writer_plain(cw: &serde_json::Value) -> String {
+    let mut out = String::new();
+    out.push_str("=== CCC Import writer (cloud → local) ===\n");
+    out.push_str(&format!(
+        "ccc_import_root: {}\n",
+        cw.get("ccc_import_root").and_then(|x| x.as_str()).unwrap_or("?")
+    ));
+    out.push_str(&format!(
+        "ccc_import_writable: {}\n",
+        cw.get("ccc_import_writable").and_then(|x| x.as_bool()).unwrap_or(false)
+    ));
+    out.push_str(&format!(
+        "claim_offline: {}\n",
+        cw.get("claim_offline").and_then(|x| x.as_bool()).unwrap_or(false)
+    ));
+    out.push_str(&format!(
+        "sync_paused: {}\n",
+        cw.get("sync_paused").and_then(|x| x.as_bool()).unwrap_or(false)
+    ));
+    out.push_str(&format!(
+        "last_claim_error: {}\n",
+        cw.get("last_claim_error").and_then(|x| x.as_str()).unwrap_or("(none)")
+    ));
+    out.push_str(&format!(
+        "last_write_error: {}\n",
+        cw.get("last_write_error").and_then(|x| x.as_str()).unwrap_or("(none)")
+    ));
+    let wms = cw
+        .get("last_write_unix_ms")
+        .and_then(|x| x.as_i64())
+        .unwrap_or(0);
+    out.push_str(&format!("last_write_unix_ms: {wms}\n"));
+    out.push_str(&format!(
+        "syncing_count: {}\n",
+        cw.get("syncing_count").and_then(|x| x.as_u64()).unwrap_or(0)
+    ));
+    out.push('\n');
+    out
+}
+
 #[tauri::command]
 pub fn uce_copy_diagnostic_report(app: AppHandle) -> Result<String, String> {
     let v = uce_get_connection_diagnostics(app.clone())?;
@@ -733,6 +785,16 @@ pub fn uce_copy_diagnostic_report(app: AppHandle) -> Result<String, String> {
         .unwrap_or("");
     let cp = v.get("capture_pipeline").cloned().unwrap_or(json!({}));
     let capture_plain = format_capture_pipeline_plain(&cp);
+    let cw = v.get("ccc_writer").cloned().unwrap_or(json!({}));
+    let ccc_writer_plain = format_ccc_writer_plain(&cw);
+
+    let hb_ok = v["last_heartbeat_success"].as_bool() == Some(true);
+    let hb_detail = v["last_heartbeat_message"].as_str().unwrap_or("");
+    let hb_detail_line = if hb_ok {
+        format!("Last heartbeat response: {hb_detail}\n")
+    } else {
+        format!("Last error message: {hb_detail}\n")
+    };
 
     let lines = format!(
         "UCE Connection + Capture Diagnostic Report\n\
@@ -751,12 +813,13 @@ Last heartbeat (unix ms): {}\n\
 Last heartbeat success: {}\n\
 Last heartbeat category: {}\n\
 Last HTTP status: {:?}\n\
-Last error message: {}\n\
+{}\
 Main overlay loaded: {}\n\
 Main URL snapshot: {}\n\
 Main URL classification: {}\n\
 \n\
-=== Capture pipeline health (watcher + CCC) ===\n\
+{}\
+=== Capture pipeline health (watcher + CCC upload) ===\n\
 {}\n\
 === Recent connection log (tail) ===\n\
 {}\n",
@@ -781,10 +844,11 @@ Main URL classification: {}\n\
         v["last_heartbeat_success"],
         v["last_heartbeat_category"].as_str().unwrap_or(""),
         v["last_heartbeat_http_status"],
-        v["last_heartbeat_message"].as_str().unwrap_or(""),
+        hb_detail_line,
         main_loaded,
         main_url,
         main_class,
+        ccc_writer_plain,
         capture_plain,
         recent
     );

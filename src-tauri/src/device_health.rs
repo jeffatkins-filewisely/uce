@@ -63,6 +63,13 @@ pub struct DeviceHealthSnapshot {
     pub agent_version: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub last_error: String,
+    pub ccc_import_writable: bool,
+    pub ccc_writer_claim_offline: bool,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub last_ccc_claim_error: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub last_ccc_write_error: String,
+    pub last_ccc_write_unix_ms: i64,
 }
 
 pub fn set_spool_pending(count: u32) {
@@ -148,6 +155,11 @@ pub fn snapshot(app: &AppHandle) -> DeviceHealthSnapshot {
         last_upload_unix_ms: LAST_UPLOAD_UNIX_MS.load(Ordering::Relaxed),
         agent_version: version,
         last_error: last_error(),
+        ccc_import_writable: ccc_package_sync::ccc_import_writable(),
+        ccc_writer_claim_offline: ccc_package_sync::is_ccc_offline(),
+        last_ccc_claim_error: ccc_package_sync::last_ccc_claim_error(),
+        last_ccc_write_error: ccc_package_sync::last_ccc_write_error(),
+        last_ccc_write_unix_ms: ccc_package_sync::last_ccc_write_unix_ms(),
     }
 }
 

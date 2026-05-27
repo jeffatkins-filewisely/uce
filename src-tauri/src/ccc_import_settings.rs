@@ -108,6 +108,22 @@ pub fn ensure_hardcoded_ccc_import_root(app: &AppHandle) {
     }
 }
 
+const WRITE_PROBE_NAME: &str = ".uce-write-probe";
+
+/// Verify the CCC Import tree is creatable and writable (AV / permissions).
+pub fn probe_ccc_import_writable(root: &str) -> Result<(), String> {
+    let root = normalize_root_path(root);
+    if root.is_empty() {
+        return Err("CCC Import path is empty".to_string());
+    }
+    fs::create_dir_all(&root).map_err(|e| format!("create_dir_all: {e}"))?;
+    let probe = Path::new(&root).join(WRITE_PROBE_NAME);
+    fs::write(&probe, b"ok").map_err(|e| format!("write probe: {e}"))?;
+    fs::remove_file(&probe).map_err(|e| format!("remove probe: {e}"))?;
+    eprintln!("CCC_IMPORT_WRITE_PROBE_OK path={root}");
+    Ok(())
+}
+
 #[cfg(windows)]
 pub fn pick_folder_dialog(description: &str, initial_path: &str) -> Option<String> {
     use std::os::windows::process::CommandExt;

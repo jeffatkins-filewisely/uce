@@ -35,7 +35,12 @@ Tooltip (hover): multi-line status — shop, heartbeat, CCC sync, pending upload
     "spool_pending": 1,
     "last_upload_unix_ms": 1710000000000,
     "last_error": "",
-    "agent_version": "0.1.56"
+    "ccc_import_writable": true,
+    "ccc_writer_claim_offline": false,
+    "last_ccc_claim_error": "",
+    "last_ccc_write_error": "",
+    "last_ccc_write_unix_ms": 0,
+    "agent_version": "0.1.57"
   }
 }
 ```

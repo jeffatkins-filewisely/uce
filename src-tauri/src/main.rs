@@ -2279,6 +2279,16 @@ pub fn run() {
             {
                 let h = app.handle().clone();
                 ccc_import_settings::ensure_hardcoded_ccc_import_root(&h);
+                match ccc_import_settings::probe_ccc_import_writable(
+                    ccc_import_settings::DEFAULT_CCC_PACKAGE_ROOT,
+                ) {
+                    Ok(()) => ccc_package_sync::set_ccc_import_writable(true),
+                    Err(e) => {
+                        ccc_package_sync::set_ccc_import_writable(false);
+                        device_health::set_last_error(format!("CCC Import not writable: {e}"));
+                        eprintln!("[UCE] CCC Import write probe failed: {e}");
+                    }
+                }
                 device_health::refresh_tray(&h);
                 #[cfg(windows)]
                 if let Err(e) = services::startup_shortcut::ensure_filewisely_uce_shortcut() {

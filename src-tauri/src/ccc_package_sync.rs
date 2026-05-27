@@ -7,7 +7,7 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tauri::menu::MenuItem;
@@ -20,6 +20,10 @@ const HTTP_TIMEOUT_SECS: u64 = 120;
 static SYNCING_COUNT: AtomicU32 = AtomicU32::new(0);
 static SYNC_PAUSED: AtomicBool = AtomicBool::new(false);
 static OFFLINE: Mutex<bool> = Mutex::new(false);
+static LAST_CLAIM_ERROR: Mutex<String> = Mutex::new(String::new());
+static LAST_WRITE_ERROR: Mutex<String> = Mutex::new(String::new());
+static LAST_WRITE_OK_MS: AtomicI64 = AtomicI64::new(0);
+static IMPORT_WRITABLE: AtomicBool = AtomicBool::new(true);
 static CCC_SYNC_STATUS_ITEM: OnceLock<MenuItem<Wry>> = OnceLock::new();
 static PAUSE_SYNC_ITEM: OnceLock<MenuItem<Wry>> = OnceLock::new();
 static RESUME_SYNC_ITEM: OnceLock<MenuItem<Wry>> = OnceLock::new();
@@ -125,9 +129,83 @@ pub fn refresh_tray_ccc_sync_item(_app: &AppHandle) {
     }
 }
 
-fn set_offline(offline: bool) {
+fn now_unix_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
+
+fn cap_err(s: &str) -> String {
+    s.chars().take(500).collect()
+}
+
+pub fn set_ccc_import_writable(writable: bool) {
+    IMPORT_WRITABLE.store(writable, Ordering::Relaxed);
+}
+
+pub fn ccc_import_writable() -> bool {
+    IMPORT_WRITABLE.load(Ordering::Relaxed)
+}
+
+pub fn last_ccc_claim_error() -> String {
+    LAST_CLAIM_ERROR
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_default()
+}
+
+pub fn last_ccc_write_error() -> String {
+    LAST_WRITE_ERROR
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_default()
+}
+
+pub fn last_ccc_write_unix_ms() -> i64 {
+    LAST_WRITE_OK_MS.load(Ordering::Relaxed)
+}
+
+fn note_claim_error(msg: &str) {
+    let m = cap_err(msg);
+    if let Ok(mut g) = LAST_CLAIM_ERROR.lock() {
+        *g = m.clone();
+    }
+    crate::device_health::set_last_error(format!("CCC claim: {m}"));
+}
+
+fn clear_claim_error() {
+    if let Ok(mut g) = LAST_CLAIM_ERROR.lock() {
+        g.clear();
+    }
+}
+
+fn note_write_error(msg: &str) {
+    let m = cap_err(msg);
+    if let Ok(mut g) = LAST_WRITE_ERROR.lock() {
+        *g = m.clone();
+    }
+    crate::device_health::set_last_error(format!("CCC write: {m}"));
+}
+
+fn note_write_ok() {
+    LAST_WRITE_OK_MS.store(now_unix_ms(), Ordering::Relaxed);
+    if let Ok(mut g) = LAST_WRITE_ERROR.lock() {
+        g.clear();
+    }
+    crate::device_health::note_ccc_sync_activity();
+}
+
+fn set_offline(offline: bool, claim_reason: Option<&str>) {
     if let Ok(mut g) = OFFLINE.lock() {
         *g = offline;
+    }
+    if offline {
+        if let Some(r) = claim_reason {
+            note_claim_error(r);
+        }
+    } else {
+        clear_claim_error();
     }
 }
 
@@ -267,8 +345,10 @@ async fn process_item(
                 dest.display()
             );
             ack_item(client, ack_endpoint, token, item, "ok", None).await;
+            note_write_ok();
         }
         Err(msg) if msg == "url_expired" => {
+            note_write_error("url_expired");
             ack_item(
                 client,
                 ack_endpoint,
@@ -284,6 +364,7 @@ async fn process_item(
                 "CCC_PACKAGE_WRITE_FAIL queue_id={} err={}",
                 item.queue_id, msg
             );
+            note_write_error(&msg);
             ack_item(
                 client,
                 ack_endpoint,
@@ -298,11 +379,20 @@ async fn process_item(
 }
 
 async fn poll_once(app: &AppHandle) {
+    if !ccc_import_writable() {
+        set_offline(
+            true,
+            Some("CCC Import folder not writable (permissions or antivirus)"),
+        );
+        crate::device_health::refresh_tray(app);
+        return;
+    }
+
     let tenant = match tenant_config::load_tenant_config(app) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("[UCE] ccc package sync: tenant: {e}");
-            set_offline(true);
+            set_offline(true, Some(&format!("tenant config: {e}")));
             crate::device_health::refresh_tray(app);
             return;
         }
@@ -311,21 +401,24 @@ async fn poll_once(app: &AppHandle) {
     let backend = tenant.backend_url.trim();
     let token = tenant.anon_key.trim();
     if backend.is_empty() || token.is_empty() {
-        set_offline(true);
+        set_offline(true, Some("missing backend_url or anon_key"));
         crate::device_health::refresh_tray(app);
         return;
     }
 
     let settings = ccc_import_settings::load_settings(app);
     let Some(root) = effective_ccc_package_root(&settings) else {
-        set_offline(true);
+        set_offline(true, Some("ccc_package_root not configured in settings.json"));
         crate::device_health::refresh_tray(app);
         return;
     };
 
     let Some(base) = edge_functions_v1_base(backend) else {
         eprintln!("[UCE] ccc package sync: cannot derive functions/v1 base from backend_url");
-        set_offline(true);
+        set_offline(
+            true,
+            Some("backend_url must contain /functions/v1 for claim-batch"),
+        );
         crate::device_health::refresh_tray(app);
         return;
     };
@@ -333,7 +426,10 @@ async fn poll_once(app: &AppHandle) {
     let device_id = match device_id::load_device_id(app) {
         Some(id) => id,
         None => {
-            set_offline(true);
+            set_offline(
+                true,
+                Some("device_id not set — open UCE overlay to complete Connect"),
+            );
             crate::device_health::refresh_tray(app);
             return;
         }
@@ -343,7 +439,7 @@ async fn poll_once(app: &AppHandle) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("[UCE] ccc package sync: http client: {e}");
-            set_offline(true);
+            set_offline(true, Some(&format!("http client: {e}")));
             crate::device_health::refresh_tray(app);
             return;
         }
@@ -359,7 +455,7 @@ async fn poll_once(app: &AppHandle) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("CCC_PACKAGE_CLAIM_NETWORK err={}", e);
-            set_offline(true);
+            set_offline(true, Some(&format!("claim network: {e}")));
             crate::device_health::refresh_tray(app);
             return;
         }
@@ -373,12 +469,15 @@ async fn poll_once(app: &AppHandle) {
             status,
             text.chars().take(200).collect::<String>()
         );
-        set_offline(true);
+        set_offline(
+            true,
+            Some(&format!("claim HTTP {status}: {}", text.chars().take(200).collect::<String>())),
+        );
         crate::device_health::refresh_tray(app);
         return;
     }
 
-    set_offline(false);
+    set_offline(false, None);
     crate::device_health::note_ccc_sync_activity();
 
     let batch: ClaimBatchResponse = match claim_resp.json().await {
@@ -409,8 +508,21 @@ async fn poll_once(app: &AppHandle) {
     crate::device_health::refresh_tray(app);
 }
 
+async fn wait_for_device_id(app: &AppHandle, max_wait_secs: u64) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(max_wait_secs);
+    while std::time::Instant::now() < deadline {
+        if device_id::load_device_id(app).is_some() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    eprintln!("CCC_PACKAGE_SYNC_DEVICE_ID_WAIT_TIMEOUT secs={max_wait_secs}");
+    let _ = app.emit("uce:request-device-id-sync", ());
+}
+
 pub fn spawn_ccc_package_sync(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
+        wait_for_device_id(&app, 45).await;
         loop {
             if !is_sync_paused() {
                 poll_once(&app).await;

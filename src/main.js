@@ -7732,6 +7732,12 @@ async function uceRuntimePrinterCheck() {
       console.info("[UCE] watchdog: stale heartbeat — forcing heartbeat");
       void sendUceHeartbeat();
     });
+    await listen("uce:request-device-id-sync", () => {
+      console.info("[UCE] CCC sync requested device_id — syncing from webview");
+      void invoke("uce_sync_device_id", { deviceId: getDeviceId() }).catch((e) =>
+        console.warn("[UCE] uce_sync_device_id:", e)
+      );
+    });
   } catch (e) {
     console.warn("[UCE] spool/watchdog listeners:", e);
   }
