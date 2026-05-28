@@ -101,8 +101,14 @@ pub fn validate_package_ack_request(
 ) -> Result<(), String> {
     let mut problems: Vec<String> = Vec::new();
 
-    if queue_id.trim().is_empty() {
+    let qid = queue_id.trim();
+    if qid.is_empty() {
         problems.push("queue_id is required".to_string());
+    } else if !is_uuid(qid) {
+        problems.push(format!(
+            "queue_id must be a UUID (got {:?})",
+            qid.chars().take(40).collect::<String>()
+        ));
     }
     if source_table.trim().is_empty() {
         problems.push("source_table is required".to_string());

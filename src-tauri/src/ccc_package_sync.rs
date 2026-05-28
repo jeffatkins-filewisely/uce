@@ -25,6 +25,10 @@ static LAST_WRITE_ERROR: Mutex<String> = Mutex::new(String::new());
 static LAST_WRITE_OK_MS: AtomicI64 = AtomicI64::new(0);
 static LAST_CLAIM_BATCH_COUNT: AtomicU32 = AtomicU32::new(0);
 static LAST_CLAIM_PARSED_MS: AtomicI64 = AtomicI64::new(0);
+static LAST_ACK_OK_MS: AtomicI64 = AtomicI64::new(0);
+static LAST_ACK_OK_COUNT: AtomicU32 = AtomicU32::new(0);
+static LAST_ACK_FAIL_COUNT: AtomicU32 = AtomicU32::new(0);
+static LAST_ACK_ERROR: Mutex<String> = Mutex::new(String::new());
 static IMPORT_WRITABLE: AtomicBool = AtomicBool::new(true);
 static CCC_SYNC_STATUS_ITEM: OnceLock<MenuItem<Wry>> = OnceLock::new();
 static PAUSE_SYNC_ITEM: OnceLock<MenuItem<Wry>> = OnceLock::new();
@@ -200,6 +204,25 @@ pub fn last_ccc_claim_parsed_unix_ms() -> i64 {
     LAST_CLAIM_PARSED_MS.load(Ordering::Relaxed)
 }
 
+pub fn last_ccc_ack_ok_unix_ms() -> i64 {
+    LAST_ACK_OK_MS.load(Ordering::Relaxed)
+}
+
+pub fn last_ccc_ack_ok_count() -> u32 {
+    LAST_ACK_OK_COUNT.load(Ordering::Relaxed)
+}
+
+pub fn last_ccc_ack_fail_count() -> u32 {
+    LAST_ACK_FAIL_COUNT.load(Ordering::Relaxed)
+}
+
+pub fn last_ccc_ack_error() -> String {
+    LAST_ACK_ERROR
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_default()
+}
+
 fn note_claim_error(msg: &str) {
     let m = cap_err(msg);
     if let Ok(mut g) = LAST_CLAIM_ERROR.lock() {
@@ -228,6 +251,32 @@ fn note_write_ok() {
         g.clear();
     }
     crate::device_health::note_ccc_sync_activity();
+}
+
+fn note_ack_error(msg: &str) {
+    let m = cap_err(msg);
+    if let Ok(mut g) = LAST_ACK_ERROR.lock() {
+        *g = m.clone();
+    }
+    crate::device_health::set_last_error(format!("CCC ack: {m}"));
+}
+
+fn clear_ack_batch_counters() {
+    LAST_ACK_OK_COUNT.store(0, Ordering::Relaxed);
+    LAST_ACK_FAIL_COUNT.store(0, Ordering::Relaxed);
+}
+
+fn record_ack_ok() {
+    LAST_ACK_OK_MS.store(now_unix_ms(), Ordering::Relaxed);
+    LAST_ACK_OK_COUNT.fetch_add(1, Ordering::Relaxed);
+    if let Ok(mut g) = LAST_ACK_ERROR.lock() {
+        g.clear();
+    }
+}
+
+fn record_ack_fail(msg: &str) {
+    LAST_ACK_FAIL_COUNT.fetch_add(1, Ordering::Relaxed);
+    note_ack_error(msg);
 }
 
 fn set_offline(offline: bool, claim_reason: Option<&str>) {
@@ -571,6 +620,7 @@ async fn ack_item(
             "CCC_PACKAGE_ACK_CONTRACT_FAIL queue_id={} err={}",
             item.queue_id, e
         );
+        record_ack_fail(&format!("contract: {e}"));
         return;
     }
     let body = AckBody {
@@ -591,25 +641,27 @@ async fn ack_item(
     match post_json(client, url, token, &body).await {
         Ok(resp) if resp.status().is_success() => {
             eprintln!(
-                "CCC_PACKAGE_ACK_OK queue_id={} status={}",
-                item.queue_id, status
+                "CCC_PACKAGE_ACK_OK queue_id={} status={} source_table={} source_id={}",
+                item.queue_id, status, item.source_table, item.source_id
             );
+            record_ack_ok();
         }
         Ok(resp) => {
-            let status = resp.status();
+            let http = resp.status();
             let text = resp.text().await.unwrap_or_default();
+            let preview: String = text.chars().take(200).collect();
             eprintln!(
                 "CCC_PACKAGE_ACK_HTTP queue_id={} http={} body={}",
-                item.queue_id,
-                status,
-                text.chars().take(200).collect::<String>()
+                item.queue_id, http, preview
             );
+            record_ack_fail(&format!("HTTP {http}: {preview}"));
         }
         Err(e) => {
             eprintln!(
                 "CCC_PACKAGE_ACK_FAIL queue_id={} err={}",
                 item.queue_id, e
             );
+            record_ack_fail(&format!("network: {e}"));
         }
     }
 }
@@ -1152,6 +1204,7 @@ async fn poll_once(app: &AppHandle) {
     }
 
     let ack_endpoint = ack_url(&base);
+    clear_ack_batch_counters();
     SYNCING_COUNT.store(count, Ordering::Relaxed);
     crate::device_health::refresh_tray(app);
 

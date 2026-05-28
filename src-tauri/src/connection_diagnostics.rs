@@ -371,6 +371,10 @@ pub fn uce_get_connection_diagnostics(app: AppHandle) -> Result<serde_json::Valu
             "last_write_unix_ms": ccc_package_sync::last_ccc_write_unix_ms(),
             "last_claim_batch_count": ccc_package_sync::last_ccc_claim_batch_count(),
             "last_claim_parsed_unix_ms": ccc_package_sync::last_ccc_claim_parsed_unix_ms(),
+            "last_ack_ok_unix_ms": ccc_package_sync::last_ccc_ack_ok_unix_ms(),
+            "last_ack_ok_count": ccc_package_sync::last_ccc_ack_ok_count(),
+            "last_ack_fail_count": ccc_package_sync::last_ccc_ack_fail_count(),
+            "last_ack_error": ccc_package_sync::last_ccc_ack_error(),
             "syncing_count": ccc_package_sync::syncing_count(),
         }),
     }))
@@ -774,6 +778,27 @@ fn format_ccc_writer_plain(cw: &serde_json::Value) -> String {
         .and_then(|x| x.as_i64())
         .unwrap_or(0);
     out.push_str(&format!("last_claim_parsed_unix_ms: {cpms}\n"));
+    out.push_str(&format!(
+        "last_ack_ok_count: {}\n",
+        cw.get("last_ack_ok_count")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0)
+    ));
+    out.push_str(&format!(
+        "last_ack_fail_count: {}\n",
+        cw.get("last_ack_fail_count")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0)
+    ));
+    let aoms = cw
+        .get("last_ack_ok_unix_ms")
+        .and_then(|x| x.as_i64())
+        .unwrap_or(0);
+    out.push_str(&format!("last_ack_ok_unix_ms: {aoms}\n"));
+    out.push_str(&format!(
+        "last_ack_error: {}\n",
+        cw.get("last_ack_error").and_then(|x| x.as_str()).unwrap_or("(none)")
+    ));
     out.push('\n');
     out
 }
