@@ -2456,6 +2456,11 @@ pub fn run() {
                 if let Err(e) = app_handle.emit("uce-system-resumed", ()) {
                     eprintln!("[UCE] emit uce-system-resumed: {e}");
                 }
+                connection_diagnostics::spawn_rust_heartbeat_if_stale(
+                    app_handle,
+                    "tauri_resumed",
+                    true,
+                );
             }
         });
 }

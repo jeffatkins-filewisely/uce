@@ -7863,6 +7863,7 @@ async function uceRuntimePrinterCheck() {
   }
   try {
     await listen("uce-system-resumed", () => {
+      console.info("[UCE] system resumed — immediate heartbeat");
       void sendUceHeartbeat();
       void ensureUceDesktopPresence();
     });

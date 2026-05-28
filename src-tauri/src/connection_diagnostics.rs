@@ -4,6 +4,7 @@ use arboard::Clipboard;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fs;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 use tauri::AppHandle;
@@ -22,6 +23,11 @@ use crate::uce_webview_url;
 
 const OUTCOME_FILE: &str = "uce-heartbeat-outcome.json";
 const RECENT_LOG_MAX: usize = 40;
+/// Must match `device_health::HEARTBEAT_STALE_MS` (tray red threshold).
+const HEARTBEAT_STALE_MS: i64 = 12 * 60 * 1000;
+const RUST_HEARTBEAT_COOLDOWN_MS: i64 = 5 * 60 * 1000;
+
+static LAST_RUST_HEARTBEAT_ATTEMPT_MS: AtomicI64 = AtomicI64::new(0);
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct HeartbeatOutcomeRecord {
@@ -71,6 +77,217 @@ fn write_outcome(app: &AppHandle, rec: &HeartbeatOutcomeRecord) -> Result<(), St
     let path = outcome_path(app)?;
     let raw = serde_json::to_string_pretty(rec).map_err(|e| e.to_string())?;
     fs::write(path, raw).map_err(|e| e.to_string())
+}
+
+fn persist_heartbeat_outcome(app: &AppHandle, rec: &HeartbeatOutcomeRecord, log_line: Option<&str>) {
+    if let Some(line) = log_line {
+        push_recent_log(app, line);
+    }
+    if let Err(e) = write_outcome(app, rec) {
+        eprintln!("UCE_HEARTBEAT_OUTCOME_WRITE_ERR {e}");
+    }
+    if !rec.success {
+        let err = if rec.message.is_empty() {
+            format!("heartbeat failed: {}", rec.category)
+        } else {
+            format!("heartbeat {}: {}", rec.category, rec.message)
+        };
+        crate::device_health::set_last_error(err);
+    }
+    crate::device_health::refresh_tray(app);
+}
+
+/// POST ingest heartbeat from Rust (sleep/wake fallback when JS timers are frozen).
+pub async fn post_ingest_heartbeat(app: &AppHandle, device_id: &str) -> HeartbeatOutcomeRecord {
+    let cfg = match tenant_config::load_tenant_config(app) {
+        Ok(c) => c,
+        Err(e) => {
+            let rec = HeartbeatOutcomeRecord {
+                last_unix_ms: now_ms(),
+                success: false,
+                category: "CONFIG_ERROR".to_string(),
+                http_status: None,
+                message: e,
+            };
+            persist_heartbeat_outcome(app, &rec, None);
+            return rec;
+        }
+    };
+
+    let bid = cfg.business_id.trim();
+    let upload = cfg.backend_url.trim();
+    let key = cfg.anon_key.trim();
+
+    if bid.is_empty() || upload.is_empty() || key.is_empty() {
+        let rec = HeartbeatOutcomeRecord {
+            last_unix_ms: now_ms(),
+            success: false,
+            category: "MISSING_CONFIG".to_string(),
+            http_status: None,
+            message: "tenant not fully configured".to_string(),
+        };
+        persist_heartbeat_outcome(app, &rec, None);
+        return rec;
+    }
+
+    if let Err(e) = crate::api_contracts::validate_heartbeat_request(bid, device_id) {
+        let rec = HeartbeatOutcomeRecord {
+            last_unix_ms: now_ms(),
+            success: false,
+            category: "CONTRACT_INVALID".to_string(),
+            http_status: None,
+            message: e,
+        };
+        persist_heartbeat_outcome(app, &rec, None);
+        return rec;
+    }
+
+    let version = env!("CARGO_PKG_VERSION").to_string();
+    let device_name = sysinfo::System::host_name().unwrap_or_else(|| "unknown".to_string());
+    let os_info = sysinfo::System::long_os_version().unwrap_or_else(|| "unknown".to_string());
+
+    let body = json!({
+        "action": "heartbeat",
+        "business_id": bid,
+        "device_id": device_id,
+        "device_name": device_name,
+        "agent_version": version,
+        "os_info": os_info,
+        "user_id": "",
+    });
+
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            let msg = e.to_string();
+            let rec = HeartbeatOutcomeRecord {
+                last_unix_ms: now_ms(),
+                success: false,
+                category: "NETWORK_ERROR".to_string(),
+                http_status: None,
+                message: msg.clone(),
+            };
+            persist_heartbeat_outcome(app, &rec, None);
+            return rec;
+        }
+    };
+
+    let resp = match client
+        .post(upload)
+        .header("Authorization", format!("Bearer {key}"))
+        .header("apikey", key)
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            let msg = e.to_string();
+            let rec = HeartbeatOutcomeRecord {
+                last_unix_ms: now_ms(),
+                success: false,
+                category: "NETWORK_ERROR".to_string(),
+                http_status: None,
+                message: msg.clone(),
+            };
+            persist_heartbeat_outcome(
+                app,
+                &rec,
+                Some(&format!("rust heartbeat NETWORK_ERROR msg={msg}")),
+            );
+            return rec;
+        }
+    };
+
+    let status = resp.status().as_u16();
+    let text = resp.text().await.unwrap_or_default();
+    let cat = categorize_http_status(status);
+
+    if (200..300).contains(&status) {
+        let rec = HeartbeatOutcomeRecord {
+            last_unix_ms: now_ms(),
+            success: true,
+            category: "HEARTBEAT_OK".to_string(),
+            http_status: Some(status),
+            message: String::new(),
+        };
+        persist_heartbeat_outcome(
+            app,
+            &rec,
+            Some(&format!(
+                "rust heartbeat OK http={status} body_len={}",
+                text.len()
+            )),
+        );
+        rec
+    } else {
+        let rec = HeartbeatOutcomeRecord {
+            last_unix_ms: now_ms(),
+            success: false,
+            category: cat.to_string(),
+            http_status: Some(status),
+            message: text.chars().take(2000).collect(),
+        };
+        persist_heartbeat_outcome(
+            app,
+            &rec,
+            Some(&format!("rust heartbeat failed http={status} category={cat}")),
+        );
+        rec
+    }
+}
+
+/// Refresh tray after sleep when JS `setInterval` may not run (WebView backgrounded).
+pub fn spawn_rust_heartbeat_if_stale(app: &AppHandle, reason: &str, force: bool) {
+    if ccc_package_sync::is_sync_paused() {
+        return;
+    }
+    let cfg = tenant_config::load_tenant_config(app).unwrap_or_default();
+    if cfg.business_id.trim().is_empty()
+        || cfg.backend_url.trim().is_empty()
+        || cfg.anon_key.trim().is_empty()
+    {
+        return;
+    }
+
+    let hb = heartbeat_outcome(app);
+    let now = now_ms();
+    let hb_age = if hb.last_unix_ms > 0 {
+        now.saturating_sub(hb.last_unix_ms)
+    } else {
+        i64::MAX
+    };
+    let stale = hb.last_unix_ms > 0 && hb_age > HEARTBEAT_STALE_MS;
+    if !force && !stale {
+        return;
+    }
+
+    let last_attempt = LAST_RUST_HEARTBEAT_ATTEMPT_MS.load(Ordering::Relaxed);
+    if !force && now.saturating_sub(last_attempt) < RUST_HEARTBEAT_COOLDOWN_MS {
+        return;
+    }
+    LAST_RUST_HEARTBEAT_ATTEMPT_MS.store(now, Ordering::Relaxed);
+
+    eprintln!(
+        "UCE_RUST_HEARTBEAT_SPAWN reason={reason} force={force} stale_age_ms={hb_age}"
+    );
+    let app = app.clone();
+    let reason = reason.to_string();
+    tauri::async_runtime::spawn(async move {
+        let Some(device_id) = crate::device_id::load_device_id(&app) else {
+            eprintln!("UCE_RUST_HEARTBEAT_SKIP reason={reason} no device_id");
+            return;
+        };
+        let rec = post_ingest_heartbeat(&app, &device_id).await;
+        eprintln!(
+            "UCE_RUST_HEARTBEAT_DONE reason={reason} success={} category={}",
+            rec.success, rec.category
+        );
+    });
 }
 
 fn push_recent_log(app: &AppHandle, line: &str) {
@@ -143,16 +360,7 @@ pub fn uce_record_heartbeat_outcome(
         http_status: payload.http_status,
         message: msg.chars().take(2000).collect(),
     };
-    write_outcome(&app, &rec)?;
-    if !payload.success {
-        let err = if msg.is_empty() {
-            format!("heartbeat failed: {}", payload.category)
-        } else {
-            format!("heartbeat {}: {}", payload.category, msg)
-        };
-        crate::device_health::set_last_error(err);
-    }
-    crate::device_health::refresh_tray(&app);
+    persist_heartbeat_outcome(&app, &rec, None);
     Ok(())
 }
 
@@ -411,9 +619,6 @@ pub async fn uce_test_ingest_connection(
         return Ok(r);
     }
 
-    let version = env!("CARGO_PKG_VERSION").to_string();
-    let device_name = sysinfo::System::host_name().unwrap_or_else(|| "unknown".to_string());
-    let os_info = sysinfo::System::long_os_version().unwrap_or_else(|| "unknown".to_string());
     let device_id = device_id.unwrap_or_else(|| format!("uce-test-{}", std::process::id()));
 
     if let Err(e) = crate::api_contracts::validate_heartbeat_request(bid, &device_id) {
@@ -423,74 +628,39 @@ pub async fn uce_test_ingest_connection(
         return Ok(r);
     }
 
-    let body = json!({
-        "action": "heartbeat",
-        "business_id": bid,
-        "device_id": device_id,
-        "device_name": device_name,
-        "agent_version": version,
-        "os_info": os_info,
-        "user_id": "",
-    });
+    let rec = post_ingest_heartbeat(&app, &device_id).await;
+    push_recent_log(
+        &app,
+        &format!(
+            "CONNECTION_TEST_{} http={:?} category={}",
+            if rec.success { "OK" } else { "FAILED" },
+            rec.http_status,
+            rec.category
+        ),
+    );
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    let resp = match client
-        .post(upload)
-        .header("Authorization", format!("Bearer {key}"))
-        .header("apikey", key)
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .send()
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            let msg = e.to_string();
-            let r = fail_test("NETWORK_ERROR", None, &msg);
-            finish_test(&app, &r);
-            eprintln!("UCE_CONNECTION_TEST_FAILED category=NETWORK_ERROR msg={msg}");
-            return Ok(r);
-        }
-    };
-
-    let status = resp.status().as_u16();
-    let text = resp.text().await.unwrap_or_default();
-    let cat = categorize_http_status(status);
-
-    if (200..300).contains(&status) {
-        eprintln!("UCE_CONNECTION_TEST_SUCCESS http={status}");
-        let rec = HeartbeatOutcomeRecord {
-            last_unix_ms: now_ms(),
-            success: true,
-            category: "HEARTBEAT_OK".to_string(),
-            http_status: Some(status),
-            message: String::new(),
-        };
-        let _ = write_outcome(&app, &rec);
-        push_recent_log(
-            &app,
-            &format!("CONNECTION_TEST_OK http={status} body_len={}", text.len()),
+    if rec.success {
+        eprintln!(
+            "UCE_CONNECTION_TEST_SUCCESS http={}",
+            rec.http_status.unwrap_or(0)
         );
         Ok(ConnectionTestResult {
             ok: true,
-            category: "HEARTBEAT_OK".to_string(),
-            http_status: Some(status),
+            category: rec.category,
+            http_status: rec.http_status,
             message: "OK".to_string(),
         })
     } else {
         eprintln!(
-            "UCE_CONNECTION_TEST_FAILED category={} http={} body={}",
-            cat,
-            status,
-            text.chars().take(200).collect::<String>()
+            "UCE_CONNECTION_TEST_FAILED category={} http={:?}",
+            rec.category, rec.http_status
         );
-        let r = fail_test(cat, Some(status), &text);
-        finish_test(&app, &r);
-        Ok(r)
+        Ok(ConnectionTestResult {
+            ok: false,
+            category: rec.category,
+            http_status: rec.http_status,
+            message: rec.message,
+        })
     }
 }
 
@@ -532,7 +702,7 @@ fn finish_test(app: &AppHandle, r: &ConnectionTestResult) {
         http_status: r.http_status,
         message: r.message.clone(),
     };
-    let _ = write_outcome(app, &rec);
+    persist_heartbeat_outcome(app, &rec, None);
 }
 
 fn format_capture_pipeline_plain(cp: &serde_json::Value) -> String {

@@ -13,6 +13,8 @@ use tauri::{AppHandle, Emitter, Manager};
 
 const LOG_PATH: &str = r"C:\FileWisely\logs\uce-health.log";
 const CHECK_INTERVAL_SECS: u64 = 60;
+/// Watchdog ticks every 60s; a much larger gap implies sleep/hibernate.
+const WATCHDOG_RESUME_GAP_MS: i64 = 90 * 1000;
 const HEARTBEAT_NUDGE_MS: i64 = 10 * 60 * 1000;
 const CCC_ACTIVITY_STALE_MS: i64 = 20 * 60 * 1000;
 const WEBVIEW_RECOVERY_COOLDOWN_MS: i64 = 3 * 60 * 1000;
@@ -21,6 +23,7 @@ const LOG_MAX_LINES: usize = 400;
 static LAST_WEBVIEW_OK_MS: AtomicI64 = AtomicI64::new(0);
 static LAST_WEBVIEW_RECOVERY_MS: AtomicI64 = AtomicI64::new(0);
 static LAST_HEARTBEAT_NUDGE_MS: AtomicI64 = AtomicI64::new(0);
+static LAST_WATCHDOG_TICK_MS: AtomicI64 = AtomicI64::new(0);
 
 fn now_unix_ms() -> i64 {
     SystemTime::now()
@@ -103,6 +106,20 @@ fn run_watchdog_tick(app: &AppHandle) {
     }
 
     let now = now_unix_ms();
+    let last_tick = LAST_WATCHDOG_TICK_MS.load(Ordering::Relaxed);
+    if last_tick > 0 {
+        let tick_gap = now.saturating_sub(last_tick);
+        if tick_gap > WATCHDOG_RESUME_GAP_MS {
+            append_health_log(&format!(
+                "system resume detected tick_gap_ms={tick_gap} — rust heartbeat + JS nudge"
+            ));
+            eprintln!("UCE_WATCHDOG_RESUME_GAP gap_ms={tick_gap}");
+            let _ = app.emit("uce-system-resumed", ());
+            connection_diagnostics::spawn_rust_heartbeat_if_stale(app, "watchdog_resume_gap", true);
+        }
+    }
+    LAST_WATCHDOG_TICK_MS.store(now, Ordering::Relaxed);
+
     let hb = connection_diagnostics::heartbeat_outcome(app);
     let hb_age = if hb.last_unix_ms > 0 {
         now.saturating_sub(hb.last_unix_ms)
@@ -125,6 +142,7 @@ fn run_watchdog_tick(app: &AppHandle) {
                 hb.category
             ));
             let _ = app.emit("uce:watchdog-heartbeat-nudge", hb_age);
+            connection_diagnostics::spawn_rust_heartbeat_if_stale(app, "watchdog_stale", false);
         }
     }
 
