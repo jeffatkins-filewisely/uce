@@ -23,6 +23,8 @@ static OFFLINE: Mutex<bool> = Mutex::new(false);
 static LAST_CLAIM_ERROR: Mutex<String> = Mutex::new(String::new());
 static LAST_WRITE_ERROR: Mutex<String> = Mutex::new(String::new());
 static LAST_WRITE_OK_MS: AtomicI64 = AtomicI64::new(0);
+static LAST_CLAIM_BATCH_COUNT: AtomicU32 = AtomicU32::new(0);
+static LAST_CLAIM_PARSED_MS: AtomicI64 = AtomicI64::new(0);
 static IMPORT_WRITABLE: AtomicBool = AtomicBool::new(true);
 static CCC_SYNC_STATUS_ITEM: OnceLock<MenuItem<Wry>> = OnceLock::new();
 static PAUSE_SYNC_ITEM: OnceLock<MenuItem<Wry>> = OnceLock::new();
@@ -72,12 +74,6 @@ pub fn refresh_pause_resume_menu() {
     if let Some(item) = RESUME_SYNC_ITEM.get() {
         let _ = item.set_enabled(paused);
     }
-}
-
-#[derive(Debug, Deserialize)]
-struct ClaimBatchResponse {
-    #[serde(default)]
-    items: Vec<ClaimItem>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -196,6 +192,14 @@ pub fn last_ccc_write_unix_ms() -> i64 {
     LAST_WRITE_OK_MS.load(Ordering::Relaxed)
 }
 
+pub fn last_ccc_claim_batch_count() -> u32 {
+    LAST_CLAIM_BATCH_COUNT.load(Ordering::Relaxed)
+}
+
+pub fn last_ccc_claim_parsed_unix_ms() -> i64 {
+    LAST_CLAIM_PARSED_MS.load(Ordering::Relaxed)
+}
+
 fn note_claim_error(msg: &str) {
     let m = cap_err(msg);
     if let Ok(mut g) = LAST_CLAIM_ERROR.lock() {
@@ -237,6 +241,141 @@ fn set_offline(offline: bool, claim_reason: Option<&str>) {
     } else {
         clear_claim_error();
     }
+}
+
+/// Edge may use snake_case or camelCase; jobs may be nested under `mirror_file` / `payload`.
+fn parse_claim_batch_body(text: &str) -> Result<Vec<ClaimItem>, String> {
+    use serde_json::Value;
+
+    let root: Value =
+        serde_json::from_str(text).map_err(|e| format!("claim JSON invalid: {e}"))?;
+
+    let arr = if let Some(a) = root.as_array() {
+        a
+    } else if let Some(obj) = root.as_object() {
+        let mut found: Option<&Vec<Value>> = None;
+        for key in [
+            "items",
+            "jobs",
+            "claimed",
+            "claimed_items",
+            "mirror_files",
+        ] {
+            if let Some(Value::Array(a)) = obj.get(key) {
+                found = Some(a);
+                break;
+            }
+        }
+        found.ok_or_else(|| {
+            let keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+            format!("claim response missing items array (top-level keys: {keys:?})")
+        })?
+    } else {
+        return Err("claim response root must be object or array".to_string());
+    };
+
+    let mut items = Vec::with_capacity(arr.len());
+    let mut skip_errors: Vec<String> = Vec::new();
+    for (i, raw) in arr.iter().enumerate() {
+        let norm = normalize_claim_item_value(raw.clone());
+        match serde_json::from_value::<ClaimItem>(norm) {
+            Ok(item) => items.push(item),
+            Err(e) => skip_errors.push(format!("[{i}]: {e}")),
+        }
+    }
+
+    if items.is_empty() {
+        if arr.is_empty() {
+            return Ok(items);
+        }
+        let hint = if skip_errors.is_empty() {
+            "no items deserialized".to_string()
+        } else {
+            format!("all {} items failed parse: {}", arr.len(), skip_errors.join("; "))
+        };
+        if text.contains("queue_id") || text.contains("queueId") || text.contains("signed_url")
+            || text.contains("signedUrl")
+        {
+            return Err(format!(
+                "{hint} — response contains job fields; likely shape mismatch"
+            ));
+        }
+        return Err(hint);
+    }
+
+    if !skip_errors.is_empty() {
+        eprintln!(
+            "CCC_PACKAGE_CLAIM_PARTIAL skipped={} parsed={} errors={}",
+            skip_errors.len(),
+            items.len(),
+            skip_errors.join("; ")
+        );
+    }
+
+    Ok(items)
+}
+
+fn camel_to_snake_field(key: &str) -> &str {
+    match key {
+        "signedUrl" => "signed_url",
+        "queueId" => "queue_id",
+        "actionType" => "action_type",
+        "roFolder" => "ro_folder",
+        "roFolderName" => "ro_folder_name",
+        "subFolder" => "sub_folder",
+        "filenameHint" => "filename_hint",
+        "targetPathHint" => "target_path_hint",
+        "sourceTable" => "source_table",
+        "sourceId" => "source_id",
+        other => other,
+    }
+}
+
+fn scalar_to_string(v: serde_json::Value) -> Option<String> {
+    match v {
+        serde_json::Value::String(s) => Some(s),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
+fn normalize_claim_item_value(v: serde_json::Value) -> serde_json::Value {
+    use serde_json::{Map, Value};
+
+    let Some(mut obj) = v.as_object().cloned() else {
+        return v;
+    };
+
+    for nest_key in ["mirror_file", "payload", "job", "data", "mirror"] {
+        if let Some(Value::Object(nested)) = obj.remove(nest_key) {
+            for (k, val) in nested {
+                obj.entry(k).or_insert(val);
+            }
+        }
+    }
+
+    let mut out = Map::new();
+    for (k, val) in obj {
+        let snake = camel_to_snake_field(&k).to_string();
+        let val = if snake == "source_id" || snake == "queue_id" {
+            scalar_to_string(val.clone())
+                .map(Value::String)
+                .unwrap_or(val)
+        } else {
+            val
+        };
+        out.insert(snake, val);
+    }
+
+    if let Some(fh) = out.remove("filename_hint") {
+        out.entry("filename".to_string()).or_insert(fh);
+    }
+    if let Some(ro) = out.remove("ro_folder") {
+        out.entry("ro_folder_name".to_string()).or_insert(ro);
+    }
+
+    Value::Object(out)
 }
 
 fn edge_functions_v1_base(backend_url: &str) -> Option<String> {
@@ -478,6 +617,34 @@ mod path_tests {
         let s = p.to_string_lossy();
         assert!(s.contains("RO1_Smith"));
         assert!(s.contains("CCC Import"));
+    }
+}
+
+#[cfg(test)]
+mod parse_tests {
+    use super::*;
+
+    #[test]
+    fn parses_snake_case_items() {
+        let body = r#"{"items":[{"queue_id":"550e8400-e29b-41d4-a716-446655440000","ro_folder":"RO1","signed_url":"https://x.test/a.jpg","filename_hint":"a.jpg","source_table":"business_documents","source_id":"42"}]}"#;
+        let items = parse_claim_batch_body(body).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].ro_folder_name.as_deref(), Some("RO1"));
+    }
+
+    #[test]
+    fn parses_camel_case_and_nested_mirror_file() {
+        let body = r#"{"items":[{"queueId":"550e8400-e29b-41d4-a716-446655440000","actionType":"mirror_file","mirror_file":{"roFolder":"RO2","signedUrl":"https://x.test/b.jpg","filenameHint":"b.jpg"},"sourceTable":"business_documents","sourceId":99}]}"#;
+        let items = parse_claim_batch_body(body).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].filename.as_deref(), Some("b.jpg"));
+        assert_eq!(items[0].source_id, "99");
+    }
+
+    #[test]
+    fn fails_when_jobs_present_but_unparseable() {
+        let body = r#"{"items":[{"queueId":"not-a-uuid"}]}"#;
+        assert!(parse_claim_batch_body(body).is_err());
     }
 }
 
@@ -786,17 +953,21 @@ async fn poll_once(app: &AppHandle) {
         }
     };
 
-    if !claim_resp.status().is_success() {
-        let status = claim_resp.status();
-        let text = claim_resp.text().await.unwrap_or_default();
+    let http_status = claim_resp.status();
+    let claim_body_text = claim_resp.text().await.unwrap_or_default();
+
+    if !http_status.is_success() {
         eprintln!(
             "CCC_PACKAGE_CLAIM_HTTP http={} body={}",
-            status,
-            text.chars().take(200).collect::<String>()
+            http_status,
+            claim_body_text.chars().take(200).collect::<String>()
         );
         set_offline(
             true,
-            Some(&format!("claim HTTP {status}: {}", text.chars().take(200).collect::<String>())),
+            Some(&format!(
+                "claim HTTP {http_status}: {}",
+                claim_body_text.chars().take(200).collect::<String>()
+            )),
         );
         crate::device_health::refresh_tray(app);
         return;
@@ -805,27 +976,33 @@ async fn poll_once(app: &AppHandle) {
     set_offline(false, None);
     crate::device_health::note_ccc_sync_activity();
 
-    let batch: ClaimBatchResponse = match claim_resp.json().await {
-        Ok(b) => b,
+    let items = match parse_claim_batch_body(&claim_body_text) {
+        Ok(v) => v,
         Err(e) => {
             eprintln!("CCC_PACKAGE_CLAIM_PARSE err={}", e);
+            note_claim_error(&e);
+            LAST_CLAIM_BATCH_COUNT.store(0, Ordering::Relaxed);
             crate::device_health::refresh_tray(app);
             return;
         }
     };
 
-    if batch.items.is_empty() {
+    let count = items.len() as u32;
+    LAST_CLAIM_BATCH_COUNT.store(count, Ordering::Relaxed);
+    LAST_CLAIM_PARSED_MS.store(now_unix_ms(), Ordering::Relaxed);
+    eprintln!("CCC_PACKAGE_CLAIM_OK parsed_items={}", count);
+
+    if items.is_empty() {
         SYNCING_COUNT.store(0, Ordering::Relaxed);
         crate::device_health::refresh_tray(app);
         return;
     }
 
     let ack_endpoint = ack_url(&base);
-    let count = batch.items.len() as u32;
     SYNCING_COUNT.store(count, Ordering::Relaxed);
     crate::device_health::refresh_tray(app);
 
-    for item in &batch.items {
+    for item in &items {
         process_item(&client, &ack_endpoint, token, &root, item).await;
     }
 

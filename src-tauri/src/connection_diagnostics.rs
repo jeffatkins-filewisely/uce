@@ -369,6 +369,8 @@ pub fn uce_get_connection_diagnostics(app: AppHandle) -> Result<serde_json::Valu
             "last_claim_error": ccc_package_sync::last_ccc_claim_error(),
             "last_write_error": ccc_package_sync::last_ccc_write_error(),
             "last_write_unix_ms": ccc_package_sync::last_ccc_write_unix_ms(),
+            "last_claim_batch_count": ccc_package_sync::last_ccc_claim_batch_count(),
+            "last_claim_parsed_unix_ms": ccc_package_sync::last_ccc_claim_parsed_unix_ms(),
             "syncing_count": ccc_package_sync::syncing_count(),
         }),
     }))
@@ -761,6 +763,17 @@ fn format_ccc_writer_plain(cw: &serde_json::Value) -> String {
         "syncing_count: {}\n",
         cw.get("syncing_count").and_then(|x| x.as_u64()).unwrap_or(0)
     ));
+    out.push_str(&format!(
+        "last_claim_batch_count: {}\n",
+        cw.get("last_claim_batch_count")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0)
+    ));
+    let cpms = cw
+        .get("last_claim_parsed_unix_ms")
+        .and_then(|x| x.as_i64())
+        .unwrap_or(0);
+    out.push_str(&format!("last_claim_parsed_unix_ms: {cpms}\n"));
     out.push('\n');
     out
 }
