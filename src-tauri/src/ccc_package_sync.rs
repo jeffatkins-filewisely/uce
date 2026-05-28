@@ -83,12 +83,37 @@ struct ClaimBatchResponse {
 #[derive(Debug, Clone, Deserialize)]
 struct ClaimItem {
     queue_id: String,
-    ro_folder_name: String,
-    bucket: String,
-    signed_url: String,
-    filename: String,
+    /// `mirror_file` (default), `delete_folder`, `delete_file`, `archive_folder`, …
+    #[serde(default)]
+    action_type: Option<String>,
+    /// Edge: `ro_folder` on mirror_file items.
+    #[serde(alias = "ro_folder", default)]
+    ro_folder_name: Option<String>,
+    /// e.g. `photos/check_in`, `estimates`, `payments` — preferred layout when set.
+    #[serde(default)]
+    sub_folder: Option<String>,
+    /// Legacy photo bucket when `sub_folder` is absent.
+    #[serde(default)]
+    bucket: Option<String>,
+    #[serde(default)]
+    signed_url: Option<String>,
+    /// Edge: `filename_hint` on mirror_file items.
+    #[serde(alias = "filename_hint", default)]
+    filename: Option<String>,
+    /// RO folder name (or relative path under CCC Import root) for cleanup jobs.
+    #[serde(default)]
+    target_path_hint: Option<String>,
     source_table: String,
     source_id: String,
+}
+
+impl ClaimItem {
+    fn action(&self) -> &str {
+        self.action_type
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or("mirror_file")
+    }
 }
 
 #[derive(Serialize)]
@@ -106,6 +131,10 @@ struct AckBody<'a> {
     status: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     error_message: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sub_folder: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    action_type: Option<&'a str>,
 }
 
 pub fn tray_ccc_sync_label() -> String {
@@ -275,6 +304,14 @@ async fn ack_item(
         source_id: &item.source_id,
         status,
         error_message,
+        sub_folder: item
+            .sub_folder
+            .as_deref()
+            .filter(|s| !s.trim().is_empty()),
+        action_type: match item.action() {
+            "mirror_file" => None,
+            other => Some(other),
+        },
     };
     match post_json(client, url, token, &body).await {
         Ok(resp) if resp.status().is_success() => {
@@ -302,11 +339,146 @@ async fn ack_item(
     }
 }
 
+fn sanitize_path_segment(s: &str) -> Option<String> {
+    let t = s.trim().trim_matches(|c| c == '/' || c == '\\');
+    if t.is_empty() || t == ".." {
+        return None;
+    }
+    let cleaned: String = t
+        .chars()
+        .map(|c| {
+            if r#"<>:\"|?*"#.contains(c) {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let cleaned = cleaned.trim_end_matches('.').to_string();
+    if cleaned.is_empty() || cleaned == ".." {
+        None
+    } else {
+        Some(cleaned)
+    }
+}
+
+fn append_sub_folder(mut base: PathBuf, sub_folder: &str) -> Option<PathBuf> {
+    for part in sub_folder.split(['/', '\\']) {
+        let seg = sanitize_path_segment(part)?;
+        base = base.join(seg);
+    }
+    Some(base)
+}
+
+/// Relative path under CCC Import root from `target_path_hint` (sanitized segments).
+pub(crate) fn path_under_root(root: &str, hint: &str) -> Option<PathBuf> {
+    append_sub_folder(PathBuf::from(root), hint)
+}
+
+/// Mirror writer path: `sub_folder` → `{root}/{ro}/{sub_folder}/{file}`; legacy `bucket`; else flat under RO.
+pub(crate) fn destination_path_for_item(root: &str, item: &ClaimItem) -> PathBuf {
+    let ro = item
+        .ro_folder_name
+        .as_deref()
+        .and_then(sanitize_path_segment)
+        .unwrap_or_else(|| "RO".to_string());
+    let file = item
+        .filename
+        .as_deref()
+        .and_then(sanitize_path_segment)
+        .unwrap_or_else(|| "file".to_string());
+    let mut base = PathBuf::from(root).join(ro);
+
+    if let Some(sf) = item.sub_folder.as_deref().filter(|s| !s.trim().is_empty()) {
+        if let Some(with_sub) = append_sub_folder(base.clone(), sf) {
+            return with_sub.join(&file);
+        }
+    }
+
+    if let Some(bucket) = item
+        .bucket
+        .as_deref()
+        .and_then(sanitize_path_segment)
+    {
+        base = base.join(bucket);
+    }
+
+    base.join(file)
+}
+
 fn destination_path(root: &str, item: &ClaimItem) -> PathBuf {
-    PathBuf::from(root)
-        .join(&item.ro_folder_name)
-        .join(&item.bucket)
-        .join(&item.filename)
+    destination_path_for_item(root, item)
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+
+    fn item(
+        ro: &str,
+        sub_folder: Option<&str>,
+        bucket: &str,
+        file: &str,
+    ) -> ClaimItem {
+        ClaimItem {
+            queue_id: "q".to_string(),
+            action_type: None,
+            ro_folder_name: Some(ro.to_string()),
+            sub_folder: sub_folder.map(String::from),
+            bucket: if bucket.is_empty() {
+                None
+            } else {
+                Some(bucket.to_string())
+            },
+            signed_url: Some("https://example.com/x".to_string()),
+            filename: Some(file.to_string()),
+            target_path_hint: None,
+            source_table: "t".to_string(),
+            source_id: "id".to_string(),
+        }
+    }
+
+    #[test]
+    fn uses_sub_folder_when_present() {
+        let p = destination_path_for_item(
+            r"C:\FileWisely\CCC Import",
+            &item("RO1", Some("photos/check_in"), "", "pic.jpg"),
+        );
+        let s = p.to_string_lossy();
+        assert!(s.contains("RO1"));
+        assert!(s.contains("photos"));
+        assert!(s.contains("check_in"));
+        assert!(s.ends_with("pic.jpg"));
+    }
+
+    #[test]
+    fn legacy_bucket_when_no_sub_folder() {
+        let p = destination_path_for_item(
+            r"C:\FileWisely\CCC Import",
+            &item("RO1", None, "estimate", "doc.pdf"),
+        );
+        let s = p.to_string_lossy();
+        assert!(s.contains("estimate"));
+        assert!(s.ends_with("doc.pdf"));
+    }
+
+    #[test]
+    fn flat_when_no_sub_folder_or_bucket() {
+        let p = destination_path_for_item(
+            r"C:\FileWisely\CCC Import",
+            &item("RO1", None, "", "only.pdf"),
+        );
+        let s = p.to_string_lossy();
+        assert!(s.ends_with(r"RO1\only.pdf") || s.ends_with("RO1/only.pdf"));
+    }
+
+    #[test]
+    fn delete_folder_resolves_under_root() {
+        let p = path_under_root(r"C:\FileWisely\CCC Import", "RO1_Smith").unwrap();
+        let s = p.to_string_lossy();
+        assert!(s.contains("RO1_Smith"));
+        assert!(s.contains("CCC Import"));
+    }
 }
 
 async fn download_to_path(client: &reqwest::Client, url: &str, dest: &PathBuf) -> Result<(), String> {
@@ -342,15 +514,115 @@ fn classify_write_error(e: &io::Error) -> String {
     }
 }
 
-async fn process_item(
+fn ensure_path_under_root(root: &std::path::Path, target: &std::path::Path) -> Result<(), String> {
+    let root_canon = std::fs::canonicalize(root).map_err(|e| format!("root canonicalize: {e}"))?;
+    let target_canon = if target.exists() {
+        std::fs::canonicalize(target).map_err(|e| format!("target canonicalize: {e}"))?
+    } else {
+        let mut acc = root_canon.clone();
+        let rel = target
+            .strip_prefix(root)
+            .map_err(|_| "target outside ccc import root".to_string())?;
+        for comp in rel.components() {
+            use std::path::Component;
+            match comp {
+                Component::Normal(p) => acc.push(p),
+                Component::CurDir => {}
+                _ => return Err("invalid path segment".to_string()),
+            }
+        }
+        acc
+    };
+    if !target_canon.starts_with(&root_canon) {
+        return Err("path outside ccc import root".to_string());
+    }
+    Ok(())
+}
+
+fn delete_folder_under_root(root: &str, target_path_hint: &str) -> Result<(), String> {
+    let hint = target_path_hint.trim();
+    if hint.is_empty() {
+        return Err("missing target_path_hint".to_string());
+    }
+    let Some(dir) = path_under_root(root, hint) else {
+        return Err("invalid target_path_hint".to_string());
+    };
+    let root_path = std::path::Path::new(root);
+    ensure_path_under_root(root_path, &dir)?;
+    if !dir.exists() {
+        return Ok(());
+    }
+    if !dir.is_dir() {
+        return Err("target_not_a_directory".to_string());
+    }
+    std::fs::remove_dir_all(&dir).map_err(|e| classify_write_error(&e))
+}
+
+async fn process_delete_folder(
     client: &reqwest::Client,
     ack_endpoint: &str,
     token: &str,
     root: &str,
     item: &ClaimItem,
 ) {
+    let hint = match item.target_path_hint.as_deref().filter(|s| !s.trim().is_empty()) {
+        Some(h) => h,
+        None => {
+            note_write_error("missing target_path_hint");
+            ack_item(
+                client,
+                ack_endpoint,
+                token,
+                item,
+                "error",
+                Some("missing target_path_hint"),
+            )
+            .await;
+            return;
+        }
+    };
+    match delete_folder_under_root(root, hint) {
+        Ok(()) => {
+            eprintln!(
+                "CCC_PACKAGE_DELETE_OK queue_id={} target={}",
+                item.queue_id, hint
+            );
+            ack_item(client, ack_endpoint, token, item, "ok", None).await;
+            note_write_ok();
+        }
+        Err(msg) => {
+            eprintln!(
+                "CCC_PACKAGE_DELETE_FAIL queue_id={} target={} err={}",
+                item.queue_id, hint, msg
+            );
+            note_write_error(&msg);
+            ack_item(client, ack_endpoint, token, item, "error", Some(&msg)).await;
+        }
+    }
+}
+
+async fn process_mirror(
+    client: &reqwest::Client,
+    ack_endpoint: &str,
+    token: &str,
+    root: &str,
+    item: &ClaimItem,
+) {
+    let Some(url) = item.signed_url.as_deref().filter(|s| !s.trim().is_empty()) else {
+        note_write_error("missing signed_url");
+        ack_item(
+            client,
+            ack_endpoint,
+            token,
+            item,
+            "error",
+            Some("missing signed_url"),
+        )
+        .await;
+        return;
+    };
     let dest = destination_path(root, item);
-    match download_to_path(client, &item.signed_url, &dest).await {
+    match download_to_path(client, url, &dest).await {
         Ok(()) => {
             eprintln!(
                 "CCC_PACKAGE_WRITTEN queue_id={} path={}",
@@ -388,6 +660,30 @@ async fn process_item(
             )
             .await;
         }
+    }
+}
+
+async fn process_item(
+    client: &reqwest::Client,
+    ack_endpoint: &str,
+    token: &str,
+    root: &str,
+    item: &ClaimItem,
+) {
+    match item.action() {
+        "delete_folder" => {
+            process_delete_folder(client, ack_endpoint, token, root, item).await;
+        }
+        "delete_file" | "archive_folder" => {
+            let msg = format!("unsupported action: {}", item.action());
+            eprintln!(
+                "CCC_PACKAGE_UNSUPPORTED queue_id={} action={}",
+                item.queue_id,
+                item.action()
+            );
+            ack_item(client, ack_endpoint, token, item, "error", Some(&msg)).await;
+        }
+        _ => process_mirror(client, ack_endpoint, token, root, item).await,
     }
 }
 

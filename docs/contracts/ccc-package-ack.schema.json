@@ -10,6 +10,15 @@
     "source_table": { "type": "string", "minLength": 1 },
     "source_id": { "type": "string", "minLength": 1 },
     "status": { "enum": ["ok", "error"] },
-    "error_message": { "type": ["string", "null"] }
+    "error_message": { "type": ["string", "null"] },
+    "sub_folder": {
+      "type": "string",
+      "description": "Optional echo of mirror path used on desktop"
+    },
+    "action_type": {
+      "type": "string",
+      "enum": ["mirror_file", "delete_folder", "delete_file", "archive_folder"],
+      "description": "Echo of job kind completed on desktop (cleanup jobs)"
+    }
   }
 }

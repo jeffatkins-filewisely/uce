@@ -10,7 +10,8 @@ Drift between **heartbeat** and **claim-batch** caused HTTP 400 (`business_id` m
 
 | Contract | JSON Schema | Lovable Zod | Desktop validator |
 |----------|-------------|-------------|-------------------|
-| `ccc-package-claim-batch` | `docs/contracts/ccc-package-claim-batch.schema.json` | `backend/contracts/cccPackageClaimBatch.ts` | `api_contracts::validate_claim_batch_request` |
+| `ccc-package-claim-batch` (request) | `docs/contracts/ccc-package-claim-batch.schema.json` | `backend/contracts/cccPackageClaimBatch.ts` | `api_contracts::validate_claim_batch_request` |
+| `ccc-package-claim-batch` (response item) | `docs/contracts/ccc-package-claim-batch-item.schema.json` | `CccPackageClaimItemSchema` in same TS file | `destination_path_for_item` in `ccc_package_sync.rs` |
 | `uce-ingest` heartbeat | `docs/contracts/uce-ingest-heartbeat.schema.json` | `backend/contracts/uceIngestHeartbeat.ts` | `api_contracts::validate_heartbeat_request` |
 | `ccc-package-ack` | `docs/contracts/ccc-package-ack.schema.json` | `backend/contracts/cccPackageAck.ts` | `api_contracts::validate_package_ack_request` |
 

@@ -42,17 +42,28 @@ Existing `uce-ingest` heartbeat (`action: "heartbeat"` in `src/main.js`) adds:
 - **Body:** `{ "business_id": "<shop-uuid>", "device_id": "<uce-device-id>", "limit": 25 }`
 - **Device id:** Webview `localStorage` (`uceDeviceId.js`), synced to `uce-device-id.txt` via `uce_sync_device_id`.
 
-**Response** — array of items (JSON field `items`), each with:
+**Response** — array of items (JSON field `items`). Each item has `action_type` (default `mirror_file` when omitted).
+
+**mirror_file**
 
 | Field | Example |
 |-------|---------|
 | `queue_id` | UUID |
-| `ro_folder_name` | `RO81587_Smith_BMW` |
-| `bucket` | `estimate` \| `check_in` \| `tear_down` \| `in_process` \| `check_out` |
+| `ro_folder` / `ro_folder_name` | `RO81587_Smith_BMW` |
+| `sub_folder` | `photos/check_in`, `estimates`, `payments`, … (optional; preferred) |
+| `bucket` | Legacy photo bucket when `sub_folder` absent |
 | `signed_url` | HTTPS download URL (~5 min expiry) |
-| `filename` | `photo.jpg` |
+| `filename_hint` / `filename` | `photo.jpg` |
 | `source_table` | pass through on ack |
 | `source_id` | pass through on ack |
+
+**delete_folder** (30-day deferred cleanup after portal close/cancel)
+
+| Field | Example |
+|-------|---------|
+| `action_type` | `delete_folder` |
+| `target_path_hint` | `RO81587_Smith_BMW` (folder under CCC Import root) |
+| `source_table` / `source_id` | intake link row — pass through on ack |
 
 **Lease:** 2 minutes server-side; crash mid-batch re-queues unacked items.
 
@@ -62,14 +73,22 @@ Rust: `src-tauri/src/ccc_package_sync.rs` — `SUPABASE_URL` is derived from `ba
 
 ## 4. Write to disk
 
-For each item:
+For each item (desktop writer, v0.1.60+):
 
-```
-{ccc_package_root}\{ro_folder_name}\{bucket}\{filename}
-```
+| `sub_folder` | Path |
+|--------------|------|
+| **set** | `{ccc_package_root}\{ro_folder}\{sub_folder}\{filename_hint}` (e.g. `...\RO1\photos\check_in\pic.jpg`) |
+| **absent**, legacy `bucket` | `{root}\{ro_folder}\{bucket}\{filename}` |
+| **absent**, no bucket | `{root}\{ro_folder}\{filename}` (flat) |
 
-- Creates parent folders as needed.
+- Creates parent folders as needed (`create_dir_all` on full chain).
 - Overwrites existing files (idempotent).
+
+Schema: `docs/contracts/ccc-package-claim-batch-item.schema.json`
+
+### delete_folder (v0.1.61+)
+
+Recursively removes `{ccc_package_root}\{target_path_hint}\` (path segments sanitized; must stay under the import root). Missing folder → ack `ok` (idempotent). Logs: `CCC_PACKAGE_DELETE_OK` / `CCC_PACKAGE_DELETE_FAIL`.
 
 ---
 
@@ -83,11 +102,14 @@ For each item:
   "source_table": "...",
   "source_id": "...",
   "status": "ok",
-  "error_message": null
+  "error_message": null,
+  "action_type": "delete_folder"
 }
 ```
 
-On `ok`, the server sets `ccc_package_ready_at` on the source photo (crew app badge → *Ready for CCC import*).
+Optional echoes: `sub_folder` (mirror layout), `action_type` (cleanup jobs).
+
+On mirror `ok`, the server sets `ccc_package_ready_at` on the source photo (crew app badge → *Ready for CCC import*).
 
 ---
 
@@ -121,7 +143,7 @@ On `ok`, the server sets `ccc_package_ready_at` on the source photo (crew app ba
 | `uce-device-id.txt` | Stable device id for claim batch |
 | `uce-tenant.json` | `backend_url`, `anon_key`, `business_id` |
 
-Log prefixes: `CCC_PACKAGE_CLAIM_*`, `CCC_PACKAGE_WRITTEN`, `CCC_PACKAGE_ACK_*`.
+Log prefixes: `CCC_PACKAGE_CLAIM_*`, `CCC_PACKAGE_WRITTEN`, `CCC_PACKAGE_DELETE_*`, `CCC_PACKAGE_ACK_*`.
 
 ---
 

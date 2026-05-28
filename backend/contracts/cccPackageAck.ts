@@ -2,11 +2,17 @@ import { z } from "zod";
 
 /** POST /functions/v1/ccc-package-ack */
 export const CccPackageAckRequestSchema = z.object({
-  queue_id: z.string().min(1),
+  queue_id: z.string().uuid(),
   source_table: z.string().min(1),
   source_id: z.string().min(1),
   status: z.enum(["ok", "error"]),
   error_message: z.string().nullable().optional(),
+  /** Optional echo from desktop when mirror used sub_folder layout */
+  sub_folder: z.string().min(1).optional(),
+  /** Echo of job kind (mirror_file, delete_folder, …) */
+  action_type: z
+    .enum(["mirror_file", "delete_folder", "delete_file", "archive_folder"])
+    .optional(),
 });
 
 export type CccPackageAckRequest = z.infer<typeof CccPackageAckRequestSchema>;
