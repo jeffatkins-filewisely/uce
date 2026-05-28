@@ -410,6 +410,13 @@ pub async fn uce_test_ingest_connection(
     let os_info = sysinfo::System::long_os_version().unwrap_or_else(|| "unknown".to_string());
     let device_id = device_id.unwrap_or_else(|| format!("uce-test-{}", std::process::id()));
 
+    if let Err(e) = crate::api_contracts::validate_heartbeat_request(bid, &device_id) {
+        let r = fail_test("CONTRACT_INVALID", None, &e);
+        finish_test(&app, &r);
+        eprintln!("UCE_CONNECTION_TEST_FAILED category=CONTRACT_INVALID msg={e}");
+        return Ok(r);
+    }
+
     let body = json!({
         "action": "heartbeat",
         "business_id": bid,

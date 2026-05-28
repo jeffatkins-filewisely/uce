@@ -8,6 +8,10 @@ UCE desktop **already sends** `device_health` on every heartbeat. This package:
 2. Patches **`uce-ingest`** to persist heartbeat + health
 3. Provides a **Lovable-ready** devices table UI
 
+## API contracts
+
+Desktop + edge must stay aligned. See **`docs/CONTRACTS.md`** and copy **`backend/contracts/*.ts`** into your Supabase functions repo (Zod validation, structured 400s).
+
 ## Deploy order
 
 ### 1. SQL migration

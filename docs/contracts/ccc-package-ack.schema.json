@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://filewisely.com/contracts/ccc-package-ack.request.json",
+  "title": "ccc-package-ack request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["queue_id", "source_table", "source_id", "status"],
+  "properties": {
+    "queue_id": { "type": "string", "minLength": 1 },
+    "source_table": { "type": "string", "minLength": 1 },
+    "source_id": { "type": "string", "minLength": 1 },
+    "status": { "enum": ["ok", "error"] },
+    "error_message": { "type": ["string", "null"] }
+  }
+}

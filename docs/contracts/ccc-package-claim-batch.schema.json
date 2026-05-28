@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://filewisely.com/contracts/ccc-package-claim-batch.request.json",
+  "title": "ccc-package-claim-batch request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["business_id", "device_id", "limit"],
+  "properties": {
+    "business_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Shop tenant UUID (same as uce-ingest heartbeat)"
+    },
+    "device_id": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "description": "Stable UCE device id (uce-device-id.txt / localStorage)"
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100,
+      "description": "Max items to claim this poll (Sidekick uses 25)"
+    }
+  }
+}

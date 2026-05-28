@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://filewisely.com/contracts/uce-ingest-heartbeat.request.json",
+  "title": "uce-ingest heartbeat request",
+  "type": "object",
+  "required": ["action", "business_id", "device_id"],
+  "properties": {
+    "action": { "const": "heartbeat" },
+    "business_id": { "type": "string", "format": "uuid" },
+    "device_id": { "type": "string", "minLength": 8, "maxLength": 128 },
+    "device_name": { "type": "string" },
+    "agent_version": { "type": "string" },
+    "os_info": { "type": "string" },
+    "user_id": { "type": "string" },
+    "ccc_package_capable": { "type": "boolean" },
+    "ccc_package_root": { "type": "string" },
+    "device_health": { "type": "object" }
+  }
+}

@@ -36,6 +36,8 @@ Example anchor/button: `href="uce://connect?business_id=${businessId}"` (or redi
 
 **`docs/PHASE_B_RELIABILITY.md`** — durable upload spool (retry after failures) + health watchdog (stale heartbeat nudge, webview recovery log).
 
+**`docs/CONTRACTS.md`** — JSON Schema + Rust preflight + Zod (`backend/contracts/`) for claim-batch, heartbeat, ack.
+
 **`backend/`** — FileWisely / Lovable deploy pack: SQL migration, `uce-ingest` heartbeat upsert, portal **UCE Devices** table component.
 
 ## FileWisely PDF printer (Windows)

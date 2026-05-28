@@ -257,6 +257,18 @@ async fn ack_item(
     status: &str,
     error_message: Option<&str>,
 ) {
+    if let Err(e) = crate::api_contracts::validate_package_ack_request(
+        &item.queue_id,
+        status,
+        &item.source_table,
+        &item.source_id,
+    ) {
+        eprintln!(
+            "CCC_PACKAGE_ACK_CONTRACT_FAIL queue_id={} err={}",
+            item.queue_id, e
+        );
+        return;
+    }
     let body = AckBody {
         queue_id: &item.queue_id,
         source_table: &item.source_table,
@@ -451,6 +463,15 @@ async fn poll_once(app: &AppHandle) {
             return;
         }
     };
+
+    if let Err(e) =
+        crate::api_contracts::validate_claim_batch_request(business_id, &device_id, CLAIM_LIMIT)
+    {
+        eprintln!("CCC_PACKAGE_CLAIM_CONTRACT_FAIL {e}");
+        set_offline(true, Some(&e));
+        crate::device_health::refresh_tray(app);
+        return;
+    }
 
     let claim_endpoint = claim_url(&base);
     let claim_body = ClaimBatchBody {

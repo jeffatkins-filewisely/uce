@@ -16,6 +16,7 @@ mod ccc_import_settings;
 mod ccc_package_sync;
 mod device_id;
 mod device_health;
+mod api_contracts;
 mod health_watchdog;
 mod local_agent_probe;
 mod upload_spool;
