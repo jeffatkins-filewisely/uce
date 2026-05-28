@@ -274,10 +274,12 @@ fn parse_claim_batch_body(text: &str) -> Result<Vec<ClaimItem>, String> {
         return Err("claim response root must be object or array".to_string());
     };
 
+    let batch_defaults = batch_ack_defaults(&root);
+
     let mut items = Vec::with_capacity(arr.len());
     let mut skip_errors: Vec<String> = Vec::new();
     for (i, raw) in arr.iter().enumerate() {
-        let norm = normalize_claim_item_value(raw.clone());
+        let norm = normalize_claim_item_value(raw.clone(), &batch_defaults);
         match serde_json::from_value::<ClaimItem>(norm) {
             Ok(item) => items.push(item),
             Err(e) => skip_errors.push(format!("[{i}]: {e}")),
@@ -340,14 +342,142 @@ fn scalar_to_string(v: serde_json::Value) -> Option<String> {
     }
 }
 
-fn normalize_claim_item_value(v: serde_json::Value) -> serde_json::Value {
+#[derive(Default, Clone)]
+struct BatchAckDefaults {
+    source_table: Option<String>,
+    source_id: Option<String>,
+}
+
+fn batch_ack_defaults(root: &serde_json::Value) -> BatchAckDefaults {
+    let Some(obj) = root.as_object() else {
+        return BatchAckDefaults::default();
+    };
+    BatchAckDefaults {
+        source_table: obj
+            .get("source_table")
+            .or(obj.get("sourceTable"))
+            .and_then(|v| scalar_to_string(v.clone())),
+        source_id: obj
+            .get("source_id")
+            .or(obj.get("sourceId"))
+            .and_then(|v| scalar_to_string(v.clone())),
+    }
+}
+
+fn apply_ack_identity_defaults(out: &mut serde_json::Map<String, serde_json::Value>, batch: &BatchAckDefaults) {
+    use serde_json::Value;
+
+    // `source: { table, id }` (legacy / compact shapes)
+    if let Some(Value::Object(src)) = out.remove("source") {
+        if !out.contains_key("source_table") {
+            if let Some(t) = src
+                .get("table")
+                .or(src.get("source_table"))
+                .or(src.get("sourceTable"))
+            {
+                if let Some(s) = scalar_to_string(t.clone()) {
+                    out.insert("source_table".to_string(), Value::String(s));
+                }
+            }
+        }
+        if !out.contains_key("source_id") {
+            if let Some(id) = src.get("id").or(src.get("source_id")).or(src.get("sourceId")) {
+                if let Some(s) = scalar_to_string(id.clone()) {
+                    out.insert("source_id".to_string(), Value::String(s));
+                }
+            }
+        }
+    }
+
+    for (from, to) in [
+        ("source", "source_table"),
+        ("table", "source_table"),
+        ("entity_table", "source_table"),
+        ("entity", "source_table"),
+        ("source_type", "source_table"),
+    ] {
+        if !out.contains_key(to) {
+            if let Some(v) = out.remove(from) {
+                if let Some(s) = scalar_to_string(v) {
+                    out.insert(to.to_string(), Value::String(s));
+                }
+            }
+        }
+    }
+
+    for (from, to) in [
+        ("document_id", "source_id"),
+        ("business_document_id", "source_id"),
+        ("photo_id", "source_id"),
+        ("row_id", "source_id"),
+        ("entity_id", "source_id"),
+    ] {
+        if !out.contains_key(to) {
+            if let Some(v) = out.get(from).cloned() {
+                if let Some(s) = scalar_to_string(v) {
+                    out.insert(to.to_string(), Value::String(s));
+                }
+            }
+        }
+    }
+
+    // Bare `id` when distinct from queue_id (common on reprocess/backfill payloads)
+    if !out.contains_key("source_id") {
+        if let Some(id) = out.get("id").cloned() {
+            let id_s = scalar_to_string(id);
+            let qid = out
+                .get("queue_id")
+                .and_then(|v| scalar_to_string(v.clone()));
+            if id_s.as_deref() != qid.as_deref() {
+                if let Some(s) = id_s {
+                    out.insert("source_id".to_string(), Value::String(s));
+                }
+            }
+        }
+    }
+
+    if !out.contains_key("source_table") {
+        if let Some(t) = &batch.source_table {
+            out.insert("source_table".to_string(), Value::String(t.clone()));
+        }
+    }
+    if !out.contains_key("source_id") {
+        if let Some(id) = &batch.source_id {
+            out.insert("source_id".to_string(), Value::String(id.clone()));
+        }
+    }
+
+    let action = out
+        .get("action_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("mirror_file")
+        .to_string();
+    let is_mirror = action == "mirror_file";
+    let has_signed = out.contains_key("signed_url");
+
+    if is_mirror && !out.contains_key("source_table") && has_signed {
+        out.insert(
+            "source_table".to_string(),
+            Value::String("business_documents".to_string()),
+        );
+        eprintln!("CCC_PACKAGE_CLAIM_INFER queue_id={:?} source_table=business_documents", out.get("queue_id"));
+    }
+    if action.as_str() == "delete_folder" && !out.contains_key("source_table") {
+        out.insert(
+            "source_table".to_string(),
+            Value::String("business_intake_links".to_string()),
+        );
+    }
+}
+
+fn normalize_claim_item_value(v: serde_json::Value, batch: &BatchAckDefaults) -> serde_json::Value {
     use serde_json::{Map, Value};
 
     let Some(mut obj) = v.as_object().cloned() else {
         return v;
     };
 
-    for nest_key in ["mirror_file", "payload", "job", "data", "mirror"] {
+    for nest_key in ["mirror_file", "payload", "job", "data", "mirror", "ack"] {
         if let Some(Value::Object(nested)) = obj.remove(nest_key) {
             for (k, val) in nested {
                 obj.entry(k).or_insert(val);
@@ -359,6 +489,10 @@ fn normalize_claim_item_value(v: serde_json::Value) -> serde_json::Value {
     for (k, val) in obj {
         let snake = camel_to_snake_field(&k).to_string();
         let val = if snake == "source_id" || snake == "queue_id" {
+            scalar_to_string(val.clone())
+                .map(Value::String)
+                .unwrap_or(val)
+        } else if snake == "source_table" {
             scalar_to_string(val.clone())
                 .map(Value::String)
                 .unwrap_or(val)
@@ -374,6 +508,8 @@ fn normalize_claim_item_value(v: serde_json::Value) -> serde_json::Value {
     if let Some(ro) = out.remove("ro_folder") {
         out.entry("ro_folder_name".to_string()).or_insert(ro);
     }
+
+    apply_ack_identity_defaults(&mut out, batch);
 
     Value::Object(out)
 }
@@ -642,8 +778,25 @@ mod parse_tests {
     }
 
     #[test]
+    fn infers_source_table_for_mirror_without_ack_fields() {
+        let body = r#"{"items":[{"queue_id":"550e8400-e29b-41d4-a716-446655440000","ro_folder":"RO1","signed_url":"https://x.test/a.jpg","filename_hint":"a.jpg","document_id":"doc-uuid-1"}]}"#;
+        let items = parse_claim_batch_body(body).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].source_table, "business_documents");
+        assert_eq!(items[0].source_id, "doc-uuid-1");
+    }
+
+    #[test]
+    fn parses_compact_source_object() {
+        let body = r#"{"items":[{"queue_id":"550e8400-e29b-41d4-a716-446655440001","signed_url":"https://x.test/c.jpg","filename":"c.jpg","source":{"table":"business_documents","id":"99"}}]}"#;
+        let items = parse_claim_batch_body(body).unwrap();
+        assert_eq!(items[0].source_table, "business_documents");
+        assert_eq!(items[0].source_id, "99");
+    }
+
+    #[test]
     fn fails_when_jobs_present_but_unparseable() {
-        let body = r#"{"items":[{"queueId":"not-a-uuid"}]}"#;
+        let body = r#"{"items":[{"queueId":"x","signed_url":"https://x.test/d.jpg"}]}"#;
         assert!(parse_claim_batch_body(body).is_err());
     }
 }
@@ -858,7 +1011,7 @@ async fn poll_once(app: &AppHandle) {
     if !ccc_import_writable() {
         set_offline(
             true,
-            Some("CCC Import folder not writable (permissions or antivirus)"),
+            Some("CCC Import folder not writable — check path exists and is not blocked by AV"),
         );
         crate::device_health::refresh_tray(app);
         return;

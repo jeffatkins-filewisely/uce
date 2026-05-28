@@ -3,7 +3,7 @@
   "$id": "https://filewisely.com/contracts/ccc-package-claim-batch.item.json",
   "title": "ccc-package-claim-batch response item",
   "type": "object",
-  "required": ["queue_id", "source_table", "source_id"],
+  "required": ["queue_id"],
   "properties": {
     "queue_id": { "type": "string", "format": "uuid" },
     "action_type": {
@@ -29,8 +29,22 @@
       "type": "string",
       "description": "RO folder name under CCC Import root (delete_folder)"
     },
-    "source_table": { "type": "string" },
-    "source_id": { "type": "string" }
+    "source_table": {
+      "type": "string",
+      "description": "Ack identity; desktop infers business_documents for mirror_file when omitted"
+    },
+    "source_id": {
+      "type": "string",
+      "description": "Row id for ack; aliases: document_id, source.id, entity_id"
+    },
+    "document_id": { "type": "string" },
+    "source": {
+      "type": "object",
+      "properties": {
+        "table": { "type": "string" },
+        "id": { "type": "string" }
+      }
+    }
   },
   "allOf": [
     {

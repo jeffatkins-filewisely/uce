@@ -36,3 +36,19 @@ if (body?.action === "heartbeat") {
 ```
 
 Requires `zod` in the edge bundle (standard in Lovable projects).
+
+## Claim-batch **response** items (mirror_file)
+
+Every claimed job in `items[]` **must** include ack identity fields the desktop echoes on `ccc-package-ack`:
+
+| Field | Required | Notes |
+|-------|----------|--------|
+| `queue_id` | yes | UUID |
+| `source_table` | yes* | e.g. `business_documents`, `business_intake_links` |
+| `source_id` | yes* | Source row UUID / id |
+| `signed_url` | mirror only | HTTPS download |
+| `ro_folder` / `filename_hint` | mirror only | Local path |
+
+\*Sidekick v0.1.63+ infers `source_table=business_documents` when missing on mirror jobs (bridge for backfill/reprocess paths). **Still fix enqueue** — route all paths through one canonical payload builder; do not rely on inference long-term.
+
+Aliases accepted by desktop: `source: { table, id }`, `document_id`, `sourceTable` / `sourceId`.
