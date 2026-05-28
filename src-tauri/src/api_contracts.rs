@@ -92,8 +92,41 @@ pub fn validate_heartbeat_request(business_id: &str, device_id: &str) -> Result<
     }
 }
 
-/// `ccc-package-ack` POST body.
-pub fn validate_package_ack_request(
+/// `ccc-package-ack` batch POST body — must match edge Zod + JSON Schema.
+pub fn validate_package_ack_batch_request(
+    business_id: &str,
+    device_id: &str,
+    item_count: usize,
+) -> Result<(), String> {
+    let mut problems: Vec<String> = Vec::new();
+
+    let bid = business_id.trim();
+    if bid.is_empty() {
+        problems.push("business_id is required".to_string());
+    } else if !is_uuid(bid) {
+        problems.push("business_id must be a UUID".to_string());
+    }
+
+    let did = device_id.trim();
+    if did.is_empty() {
+        problems.push("device_id is required".to_string());
+    } else if !device_id_ok(did) {
+        problems.push("device_id must be 8–128 chars (alphanumeric, -, _)".to_string());
+    }
+
+    if item_count == 0 {
+        problems.push("items must not be empty".to_string());
+    }
+
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("contract validation failed: {}", problems.join("; ")))
+    }
+}
+
+/// One element of `ccc-package-ack` `items[]`.
+pub fn validate_package_ack_item(
     queue_id: &str,
     status: &str,
     source_table: &str,
@@ -126,6 +159,17 @@ pub fn validate_package_ack_request(
     } else {
         Err(format!("contract validation failed: {}", problems.join("; ")))
     }
+}
+
+/// Legacy single-item ack shape (deprecated).
+#[allow(dead_code)]
+pub fn validate_package_ack_request(
+    queue_id: &str,
+    status: &str,
+    source_table: &str,
+    source_id: &str,
+) -> Result<(), String> {
+    validate_package_ack_item(queue_id, status, source_table, source_id)
 }
 
 #[cfg(test)]

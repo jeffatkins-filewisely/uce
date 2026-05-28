@@ -18,7 +18,7 @@ Drift between **heartbeat** and **claim-batch** caused HTTP 400 (`business_id` m
 ## Desktop behavior
 
 - **Claim poll:** validates `business_id` (UUID), `device_id`, `limit` → sets `last_ccc_claim_error` with `contract validation failed: …` and **does not POST** if invalid.
-- **Ack:** validates before each ack POST.
+- **Ack:** validates batch body (`business_id`, `device_id`, `items[]`) before each ack POST.
 - **Connection test heartbeat:** validates before POST.
 
 ## Edge behavior (Lovable)

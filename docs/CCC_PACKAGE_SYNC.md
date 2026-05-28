@@ -96,18 +96,30 @@ Recursively removes `{ccc_package_root}\{target_path_hint}\` (path segments sani
 
 **POST** `{SUPABASE_URL}/functions/v1/ccc-package-ack`
 
+Canonical batch body (Sidekick v0.1.65+):
+
 ```json
 {
-  "queue_id": "...",
-  "source_table": "...",
-  "source_id": "...",
-  "status": "ok",
-  "error_message": null,
-  "action_type": "delete_folder"
+  "business_id": "<shop-uuid>",
+  "device_id": "<uce-device-id>",
+  "items": [
+    {
+      "queue_id": "...",
+      "source_table": "business_documents",
+      "source_id": "...",
+      "status": "ok",
+      "written_path": "C:\\FileWisely\\CCC Import\\RO1\\photos\\check_in\\pic.jpg",
+      "error_message": null
+    }
+  ]
 }
 ```
 
-Optional echoes: `sub_folder` (mirror layout), `action_type` (cleanup jobs).
+- One POST per claim batch after all items are processed (not per-file).
+- `written_path` — absolute local path on mirror `ok` (server may persist as `written_path` on queue row).
+- Optional per item: `sub_folder`, `action_type` (cleanup jobs).
+
+Edge v2 also accepts legacy flat / `acks` shapes for back-compat; desktop sends canonical `items` only.
 
 On mirror `ok`, the server sets `ccc_package_ready_at` on the source photo (crew app badge → *Ready for CCC import*).
 

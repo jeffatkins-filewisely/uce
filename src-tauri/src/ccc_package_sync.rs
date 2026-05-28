@@ -123,18 +123,40 @@ struct ClaimBatchBody<'a> {
     limit: u32,
 }
 
+/// One row in `ccc-package-ack` POST body `items[]`.
+#[derive(Clone)]
+struct PendingAck {
+    queue_id: String,
+    source_table: String,
+    source_id: String,
+    status: String,
+    error_message: Option<String>,
+    written_path: Option<String>,
+    sub_folder: Option<String>,
+    action_type: Option<String>,
+}
+
 #[derive(Serialize)]
-struct AckBody<'a> {
+struct AckItemBody<'a> {
     queue_id: &'a str,
     source_table: &'a str,
     source_id: &'a str,
     status: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    written_path: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error_message: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     sub_folder: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     action_type: Option<&'a str>,
+}
+
+#[derive(Serialize)]
+struct AckBatchBody<'a> {
+    business_id: &'a str,
+    device_id: &'a str,
+    items: Vec<AckItemBody<'a>>,
 }
 
 pub fn tray_ccc_sync_label() -> String {
@@ -602,65 +624,115 @@ async fn post_json(
         .map_err(|e| format!("request failed: {e}"))
 }
 
-async fn ack_item(
-    client: &reqwest::Client,
-    url: &str,
-    token: &str,
+fn queue_ack(
+    pending: &mut Vec<PendingAck>,
     item: &ClaimItem,
     status: &str,
-    error_message: Option<&str>,
+    error_message: Option<String>,
+    written_path: Option<String>,
 ) {
-    if let Err(e) = crate::api_contracts::validate_package_ack_request(
-        &item.queue_id,
-        status,
-        &item.source_table,
-        &item.source_id,
-    ) {
-        eprintln!(
-            "CCC_PACKAGE_ACK_CONTRACT_FAIL queue_id={} err={}",
-            item.queue_id, e
-        );
-        record_ack_fail(&format!("contract: {e}"));
-        return;
-    }
-    let body = AckBody {
-        queue_id: &item.queue_id,
-        source_table: &item.source_table,
-        source_id: &item.source_id,
-        status,
+    pending.push(PendingAck {
+        queue_id: item.queue_id.clone(),
+        source_table: item.source_table.clone(),
+        source_id: item.source_id.clone(),
+        status: status.to_string(),
         error_message,
+        written_path,
         sub_folder: item
             .sub_folder
-            .as_deref()
+            .clone()
             .filter(|s| !s.trim().is_empty()),
         action_type: match item.action() {
             "mirror_file" => None,
-            other => Some(other),
+            other => Some(other.to_string()),
         },
+    });
+}
+
+async fn post_ack_batch(
+    client: &reqwest::Client,
+    url: &str,
+    token: &str,
+    business_id: &str,
+    device_id: &str,
+    pending: &[PendingAck],
+) {
+    if pending.is_empty() {
+        return;
+    }
+
+    if let Err(e) = crate::api_contracts::validate_package_ack_batch_request(
+        business_id,
+        device_id,
+        pending.len(),
+    ) {
+        eprintln!("CCC_PACKAGE_ACK_CONTRACT_FAIL batch err={}", e);
+        record_ack_fail(&format!("contract: {e}"));
+        return;
+    }
+
+    for (i, ack) in pending.iter().enumerate() {
+        if let Err(e) = crate::api_contracts::validate_package_ack_item(
+            &ack.queue_id,
+            &ack.status,
+            &ack.source_table,
+            &ack.source_id,
+        ) {
+            eprintln!(
+                "CCC_PACKAGE_ACK_CONTRACT_FAIL item[{}] queue_id={} err={}",
+                i, ack.queue_id, e
+            );
+            record_ack_fail(&format!("contract item[{i}]: {e}"));
+            return;
+        }
+    }
+
+    let body = AckBatchBody {
+        business_id,
+        device_id,
+        items: pending
+            .iter()
+            .map(|a| AckItemBody {
+                queue_id: &a.queue_id,
+                source_table: &a.source_table,
+                source_id: &a.source_id,
+                status: &a.status,
+                written_path: a.written_path.as_deref(),
+                error_message: a.error_message.as_deref(),
+                sub_folder: a.sub_folder.as_deref(),
+                action_type: a.action_type.as_deref(),
+            })
+            .collect(),
     };
+
+    eprintln!(
+        "CCC_PACKAGE_ACK_POST business_id={} device_id={} items={}",
+        business_id,
+        device_id,
+        pending.len()
+    );
+
     match post_json(client, url, token, &body).await {
         Ok(resp) if resp.status().is_success() => {
             eprintln!(
-                "CCC_PACKAGE_ACK_OK queue_id={} status={} source_table={} source_id={}",
-                item.queue_id, status, item.source_table, item.source_id
+                "CCC_PACKAGE_ACK_OK batch items={} ok={} fail={}",
+                pending.len(),
+                pending.iter().filter(|a| a.status == "ok").count(),
+                pending.iter().filter(|a| a.status == "error").count()
             );
-            record_ack_ok();
+            for _ in 0..pending.len() {
+                record_ack_ok();
+            }
         }
         Ok(resp) => {
             let http = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            let preview: String = text.chars().take(200).collect();
-            eprintln!(
-                "CCC_PACKAGE_ACK_HTTP queue_id={} http={} body={}",
-                item.queue_id, http, preview
-            );
+            let preview: String = text.chars().take(300).collect();
+            eprintln!("CCC_PACKAGE_ACK_HTTP batch http={} body={}", http, preview);
             record_ack_fail(&format!("HTTP {http}: {preview}"));
         }
         Err(e) => {
-            eprintln!(
-                "CCC_PACKAGE_ACK_FAIL queue_id={} err={}",
-                item.queue_id, e
-            );
+            eprintln!("CCC_PACKAGE_ACK_FAIL batch err={}", e);
             record_ack_fail(&format!("network: {e}"));
         }
     }
@@ -930,26 +1002,18 @@ fn delete_folder_under_root(root: &str, target_path_hint: &str) -> Result<(), St
     std::fs::remove_dir_all(&dir).map_err(|e| classify_write_error(&e))
 }
 
-async fn process_delete_folder(
-    client: &reqwest::Client,
-    ack_endpoint: &str,
-    token: &str,
-    root: &str,
-    item: &ClaimItem,
-) {
+async fn process_delete_folder(root: &str, item: &ClaimItem, pending: &mut Vec<PendingAck>) {
     let hint = match item.target_path_hint.as_deref().filter(|s| !s.trim().is_empty()) {
         Some(h) => h,
         None => {
             note_write_error("missing target_path_hint");
-            ack_item(
-                client,
-                ack_endpoint,
-                token,
+            queue_ack(
+                pending,
                 item,
                 "error",
-                Some("missing target_path_hint"),
-            )
-            .await;
+                Some("missing target_path_hint".to_string()),
+                None,
+            );
             return;
         }
     };
@@ -959,7 +1023,7 @@ async fn process_delete_folder(
                 "CCC_PACKAGE_DELETE_OK queue_id={} target={}",
                 item.queue_id, hint
             );
-            ack_item(client, ack_endpoint, token, item, "ok", None).await;
+            queue_ack(pending, item, "ok", None, None);
             note_write_ok();
         }
         Err(msg) => {
@@ -968,53 +1032,48 @@ async fn process_delete_folder(
                 item.queue_id, hint, msg
             );
             note_write_error(&msg);
-            ack_item(client, ack_endpoint, token, item, "error", Some(&msg)).await;
+            queue_ack(pending, item, "error", Some(msg), None);
         }
     }
 }
 
 async fn process_mirror(
     client: &reqwest::Client,
-    ack_endpoint: &str,
-    token: &str,
     root: &str,
     item: &ClaimItem,
+    pending: &mut Vec<PendingAck>,
 ) {
     let Some(url) = item.signed_url.as_deref().filter(|s| !s.trim().is_empty()) else {
         note_write_error("missing signed_url");
-        ack_item(
-            client,
-            ack_endpoint,
-            token,
+        queue_ack(
+            pending,
             item,
             "error",
-            Some("missing signed_url"),
-        )
-        .await;
+            Some("missing signed_url".to_string()),
+            None,
+        );
         return;
     };
     let dest = destination_path(root, item);
     match download_to_path(client, url, &dest).await {
         Ok(()) => {
+            let path = dest.display().to_string();
             eprintln!(
                 "CCC_PACKAGE_WRITTEN queue_id={} path={}",
-                item.queue_id,
-                dest.display()
+                item.queue_id, path
             );
-            ack_item(client, ack_endpoint, token, item, "ok", None).await;
+            queue_ack(pending, item, "ok", None, Some(path));
             note_write_ok();
         }
         Err(msg) if msg == "url_expired" => {
             note_write_error("url_expired");
-            ack_item(
-                client,
-                ack_endpoint,
-                token,
+            queue_ack(
+                pending,
                 item,
                 "error",
-                Some("url_expired"),
-            )
-            .await;
+                Some("url_expired".to_string()),
+                None,
+            );
         }
         Err(msg) => {
             eprintln!(
@@ -1022,30 +1081,19 @@ async fn process_mirror(
                 item.queue_id, msg
             );
             note_write_error(&msg);
-            ack_item(
-                client,
-                ack_endpoint,
-                token,
-                item,
-                "error",
-                Some(&msg),
-            )
-            .await;
+            queue_ack(pending, item, "error", Some(msg), None);
         }
     }
 }
 
 async fn process_item(
     client: &reqwest::Client,
-    ack_endpoint: &str,
-    token: &str,
     root: &str,
     item: &ClaimItem,
+    pending: &mut Vec<PendingAck>,
 ) {
     match item.action() {
-        "delete_folder" => {
-            process_delete_folder(client, ack_endpoint, token, root, item).await;
-        }
+        "delete_folder" => process_delete_folder(root, item, pending).await,
         "delete_file" | "archive_folder" => {
             let msg = format!("unsupported action: {}", item.action());
             eprintln!(
@@ -1053,9 +1101,9 @@ async fn process_item(
                 item.queue_id,
                 item.action()
             );
-            ack_item(client, ack_endpoint, token, item, "error", Some(&msg)).await;
+            queue_ack(pending, item, "error", Some(msg), None);
         }
-        _ => process_mirror(client, ack_endpoint, token, root, item).await,
+        _ => process_mirror(client, root, item, pending).await,
     }
 }
 
@@ -1208,9 +1256,20 @@ async fn poll_once(app: &AppHandle) {
     SYNCING_COUNT.store(count, Ordering::Relaxed);
     crate::device_health::refresh_tray(app);
 
+    let mut pending_acks = Vec::with_capacity(items.len());
     for item in &items {
-        process_item(&client, &ack_endpoint, token, &root, item).await;
+        process_item(&client, &root, item, &mut pending_acks).await;
     }
+
+    post_ack_batch(
+        &client,
+        &ack_endpoint,
+        token,
+        business_id,
+        &device_id,
+        &pending_acks,
+    )
+    .await;
 
     SYNCING_COUNT.store(0, Ordering::Relaxed);
     crate::device_health::refresh_tray(app);

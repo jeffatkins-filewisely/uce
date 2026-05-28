@@ -1,24 +1,34 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://filewisely.com/contracts/ccc-package-ack.request.json",
-  "title": "ccc-package-ack request",
+  "title": "ccc-package-ack request (batch)",
   "type": "object",
-  "additionalProperties": false,
-  "required": ["queue_id", "source_table", "source_id", "status"],
+  "required": ["business_id", "device_id", "items"],
   "properties": {
-    "queue_id": { "type": "string", "minLength": 1 },
-    "source_table": { "type": "string", "minLength": 1 },
-    "source_id": { "type": "string", "minLength": 1 },
-    "status": { "enum": ["ok", "error"] },
-    "error_message": { "type": ["string", "null"] },
-    "sub_folder": {
-      "type": "string",
-      "description": "Optional echo of mirror path used on desktop"
-    },
-    "action_type": {
-      "type": "string",
-      "enum": ["mirror_file", "delete_folder", "delete_file", "archive_folder"],
-      "description": "Echo of job kind completed on desktop (cleanup jobs)"
+    "business_id": { "type": "string", "format": "uuid" },
+    "device_id": { "type": "string", "minLength": 8, "maxLength": 128 },
+    "items": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["queue_id", "source_table", "source_id", "status"],
+        "properties": {
+          "queue_id": { "type": "string", "format": "uuid" },
+          "source_table": { "type": "string", "minLength": 1 },
+          "source_id": { "type": "string", "minLength": 1 },
+          "status": { "enum": ["ok", "error"] },
+          "written_path": {
+            "type": "string",
+            "description": "Local absolute path after mirror write (mirror_file ok)"
+          },
+          "error_message": { "type": ["string", "null"] },
+          "sub_folder": { "type": "string" },
+          "action_type": {
+            "enum": ["mirror_file", "delete_folder", "delete_file", "archive_folder"]
+          }
+        }
+      }
     }
   }
 }
