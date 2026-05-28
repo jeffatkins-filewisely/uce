@@ -406,11 +406,27 @@ fn camel_to_snake_field(key: &str) -> &str {
 
 fn scalar_to_string(v: serde_json::Value) -> Option<String> {
     match v {
-        serde_json::Value::String(s) => Some(s),
+        serde_json::Value::String(s) => {
+            let t = s.trim();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t.to_string())
+            }
+        }
         serde_json::Value::Number(n) => Some(n.to_string()),
         serde_json::Value::Bool(b) => Some(b.to_string()),
         _ => None,
     }
+}
+
+fn json_string_field(map: &serde_json::Map<String, serde_json::Value>, key: &str) -> Option<String> {
+    map.get(key)
+        .and_then(|v| scalar_to_string(v.clone()))
+}
+
+fn json_field_missing(map: &serde_json::Map<String, serde_json::Value>, key: &str) -> bool {
+    json_string_field(map, key).is_none()
 }
 
 #[derive(Default, Clone)]
@@ -438,9 +454,12 @@ fn batch_ack_defaults(root: &serde_json::Value) -> BatchAckDefaults {
 fn apply_ack_identity_defaults(out: &mut serde_json::Map<String, serde_json::Value>, batch: &BatchAckDefaults) {
     use serde_json::Value;
 
+    // Drop JSON nulls so serde never sees `null` for required string fields.
+    out.retain(|_, v| !v.is_null());
+
     // `source: { table, id }` (legacy / compact shapes)
     if let Some(Value::Object(src)) = out.remove("source") {
-        if !out.contains_key("source_table") {
+        if json_field_missing(&out, "source_table") {
             if let Some(t) = src
                 .get("table")
                 .or(src.get("source_table"))
@@ -451,7 +470,7 @@ fn apply_ack_identity_defaults(out: &mut serde_json::Map<String, serde_json::Val
                 }
             }
         }
-        if !out.contains_key("source_id") {
+        if json_field_missing(&out, "source_id") {
             if let Some(id) = src.get("id").or(src.get("source_id")).or(src.get("sourceId")) {
                 if let Some(s) = scalar_to_string(id.clone()) {
                     out.insert("source_id".to_string(), Value::String(s));
@@ -467,7 +486,7 @@ fn apply_ack_identity_defaults(out: &mut serde_json::Map<String, serde_json::Val
         ("entity", "source_table"),
         ("source_type", "source_table"),
     ] {
-        if !out.contains_key(to) {
+        if json_field_missing(&out, to) {
             if let Some(v) = out.remove(from) {
                 if let Some(s) = scalar_to_string(v) {
                     out.insert(to.to_string(), Value::String(s));
@@ -482,8 +501,11 @@ fn apply_ack_identity_defaults(out: &mut serde_json::Map<String, serde_json::Val
         ("photo_id", "source_id"),
         ("row_id", "source_id"),
         ("entity_id", "source_id"),
+        ("intake_link_id", "source_id"),
+        ("business_intake_link_id", "source_id"),
+        ("portal_id", "source_id"),
     ] {
-        if !out.contains_key(to) {
+        if json_field_missing(&out, to) {
             if let Some(v) = out.get(from).cloned() {
                 if let Some(s) = scalar_to_string(v) {
                     out.insert(to.to_string(), Value::String(s));
@@ -493,12 +515,10 @@ fn apply_ack_identity_defaults(out: &mut serde_json::Map<String, serde_json::Val
     }
 
     // Bare `id` when distinct from queue_id (common on reprocess/backfill payloads)
-    if !out.contains_key("source_id") {
+    if json_field_missing(&out, "source_id") {
         if let Some(id) = out.get("id").cloned() {
             let id_s = scalar_to_string(id);
-            let qid = out
-                .get("queue_id")
-                .and_then(|v| scalar_to_string(v.clone()));
+            let qid = json_string_field(&out, "queue_id");
             if id_s.as_deref() != qid.as_deref() {
                 if let Some(s) = id_s {
                     out.insert("source_id".to_string(), Value::String(s));
@@ -507,12 +527,12 @@ fn apply_ack_identity_defaults(out: &mut serde_json::Map<String, serde_json::Val
         }
     }
 
-    if !out.contains_key("source_table") {
+    if json_field_missing(&out, "source_table") {
         if let Some(t) = &batch.source_table {
             out.insert("source_table".to_string(), Value::String(t.clone()));
         }
     }
-    if !out.contains_key("source_id") {
+    if json_field_missing(&out, "source_id") {
         if let Some(id) = &batch.source_id {
             out.insert("source_id".to_string(), Value::String(id.clone()));
         }
@@ -524,21 +544,36 @@ fn apply_ack_identity_defaults(out: &mut serde_json::Map<String, serde_json::Val
         .unwrap_or("mirror_file")
         .to_string();
     let is_mirror = action == "mirror_file";
-    let has_signed = out.contains_key("signed_url");
+    let has_signed = json_string_field(&out, "signed_url").is_some();
 
-    if is_mirror && !out.contains_key("source_table") && has_signed {
+    if is_mirror && json_field_missing(&out, "source_table") && has_signed {
         out.insert(
             "source_table".to_string(),
             Value::String("business_documents".to_string()),
         );
-        eprintln!("CCC_PACKAGE_CLAIM_INFER queue_id={:?} source_table=business_documents", out.get("queue_id"));
-    }
-    if action.as_str() == "delete_folder" && !out.contains_key("source_table") {
-        out.insert(
-            "source_table".to_string(),
-            Value::String("business_intake_links".to_string()),
+        eprintln!(
+            "CCC_PACKAGE_CLAIM_INFER queue_id={:?} source_table=business_documents",
+            json_string_field(&out, "queue_id")
         );
     }
+    if action.as_str() == "delete_folder" {
+        if json_field_missing(&out, "source_table") {
+            out.insert(
+                "source_table".to_string(),
+                Value::String("business_intake_links".to_string()),
+            );
+        }
+        if json_field_missing(&out, "source_id") {
+            for alt in ["intake_link_id", "business_intake_link_id", "portal_id"] {
+                if let Some(s) = json_string_field(&out, alt) {
+                    out.insert("source_id".to_string(), Value::String(s));
+                    break;
+                }
+            }
+        }
+    }
+
+    out.retain(|_, v| !v.is_null());
 }
 
 fn normalize_claim_item_value(v: serde_json::Value, batch: &BatchAckDefaults) -> serde_json::Value {
@@ -551,13 +586,18 @@ fn normalize_claim_item_value(v: serde_json::Value, batch: &BatchAckDefaults) ->
     for nest_key in ["mirror_file", "payload", "job", "data", "mirror", "ack"] {
         if let Some(Value::Object(nested)) = obj.remove(nest_key) {
             for (k, val) in nested {
-                obj.entry(k).or_insert(val);
+                if !val.is_null() {
+                    obj.entry(k).or_insert(val);
+                }
             }
         }
     }
 
     let mut out = Map::new();
     for (k, val) in obj {
+        if val.is_null() {
+            continue;
+        }
         let snake = camel_to_snake_field(&k).to_string();
         let val = if snake == "source_id" || snake == "queue_id" {
             scalar_to_string(val.clone())
@@ -570,7 +610,9 @@ fn normalize_claim_item_value(v: serde_json::Value, batch: &BatchAckDefaults) ->
         } else {
             val
         };
-        out.insert(snake, val);
+        if !val.is_null() {
+            out.insert(snake, val);
+        }
     }
 
     if let Some(fh) = out.remove("filename_hint") {
@@ -916,6 +958,15 @@ mod parse_tests {
         let items = parse_claim_batch_body(body).unwrap();
         assert_eq!(items[0].source_table, "business_documents");
         assert_eq!(items[0].source_id, "99");
+    }
+
+    #[test]
+    fn parses_null_source_table_and_source_id() {
+        let body = r#"{"items":[{"queue_id":"550e8400-e29b-41d4-a716-446655440000","source_table":null,"source_id":null,"document_id":"550e8400-e29b-41d4-a716-446655440001","ro_folder":"RO1","signed_url":"https://x.test/a.jpg","filename_hint":"a.jpg"}]}"#;
+        let items = parse_claim_batch_body(body).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].source_table, "business_documents");
+        assert_eq!(items[0].source_id, "550e8400-e29b-41d4-a716-446655440001");
     }
 
     #[test]
