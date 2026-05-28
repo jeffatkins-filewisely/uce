@@ -100,8 +100,8 @@ function logUceConnectionDiagnostics(phase) {
 const WATCH_POLICY_URL = (import.meta.env.VITE_UCE_WATCH_POLICY_URL || "").trim();
 const WATCH_POLICY_POLL_MS = Number(import.meta.env.VITE_UCE_WATCH_POLICY_POLL_MS) || 30 * 60 * 1000;
 const UPLOAD_TIMEOUT_MS = 10000;
-/** `uce-ingest` heartbeat — keeps portal device Active + `agent_version` (see plan). */
-const UCE_HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
+/** `uce-ingest` heartbeat — keeps portal device Active + `agent_version` (align with Live Mirror ~60s). */
+const UCE_HEARTBEAT_INTERVAL_MS = 60 * 1000;
 const UCE_HEARTBEAT_FETCH_MS = 15000;
 /** Hardcoded on desktop — matches `ccc_import_settings::DEFAULT_CCC_PACKAGE_ROOT`. */
 const UCE_CCC_IMPORT_ROOT = "C:\\FileWisely\\CCC Import";
