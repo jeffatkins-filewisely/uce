@@ -93,6 +93,7 @@ struct ClaimItem {
 
 #[derive(Serialize)]
 struct ClaimBatchBody<'a> {
+    business_id: &'a str,
     device_id: &'a str,
     limit: u32,
 }
@@ -398,8 +399,14 @@ async fn poll_once(app: &AppHandle) {
         }
     };
 
+    let business_id = tenant.business_id.trim();
     let backend = tenant.backend_url.trim();
     let token = tenant.anon_key.trim();
+    if business_id.is_empty() {
+        set_offline(true, Some("missing business_id in uce-tenant.json"));
+        crate::device_health::refresh_tray(app);
+        return;
+    }
     if backend.is_empty() || token.is_empty() {
         set_offline(true, Some("missing backend_url or anon_key"));
         crate::device_health::refresh_tray(app);
@@ -447,6 +454,7 @@ async fn poll_once(app: &AppHandle) {
 
     let claim_endpoint = claim_url(&base);
     let claim_body = ClaimBatchBody {
+        business_id,
         device_id: &device_id,
         limit: CLAIM_LIMIT,
     };

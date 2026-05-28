@@ -39,7 +39,7 @@ Existing `uce-ingest` heartbeat (`action: "heartbeat"` in `src/main.js`) adds:
 **POST** `{SUPABASE_URL}/functions/v1/ccc-package-claim-batch`
 
 - **Authorization:** `Bearer {anon_key}` from `uce-tenant.json` (same token as ingest / edge functions).
-- **Body:** `{ "device_id": "<uce-device-id>", "limit": 25 }`
+- **Body:** `{ "business_id": "<shop-uuid>", "device_id": "<uce-device-id>", "limit": 25 }`
 - **Device id:** Webview `localStorage` (`uceDeviceId.js`), synced to `uce-device-id.txt` via `uce_sync_device_id`.
 
 **Response** — array of items (JSON field `items`), each with:
