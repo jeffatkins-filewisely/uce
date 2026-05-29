@@ -195,9 +195,8 @@ pub fn spawn_spool_drain_loop(app: AppHandle) {
             if count == 0 {
                 continue;
             }
-            if crate::ccc_package_sync::is_sync_paused() {
-                continue;
-            }
+            // Document upload drains continue even when the CCC mirror is paused —
+            // pausing the mirror must not stop capture from printers/folders.
             eprintln!("UCE_UPLOAD_SPOOL_DRAIN_NUDGE pending={}", count);
             let _ = app.emit("uce:spool-drain", count);
         }

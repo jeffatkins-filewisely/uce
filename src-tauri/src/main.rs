@@ -549,18 +549,18 @@ fn uce_try_build_tray(app: &tauri::AppHandle) {
             return;
         }
     };
-    let pause_i = match MenuItem::with_id(app, "uce-tray-pause", "Pause Sync", true, None::<&str>) {
+    let pause_i = match MenuItem::with_id(app, "uce-tray-pause", "Pause Mirror", true, None::<&str>) {
         Ok(i) => i,
         Err(e) => {
-            eprintln!("[UCE] tray Pause Sync: {e}");
+            eprintln!("[UCE] tray Pause Mirror: {e}");
             return;
         }
     };
     let resume_i =
-        match MenuItem::with_id(app, "uce-tray-resume", "Resume Sync", false, None::<&str>) {
+        match MenuItem::with_id(app, "uce-tray-resume", "Resume Mirror", false, None::<&str>) {
             Ok(i) => i,
             Err(e) => {
-                eprintln!("[UCE] tray Resume Sync: {e}");
+                eprintln!("[UCE] tray Resume Mirror: {e}");
                 return;
             }
         };

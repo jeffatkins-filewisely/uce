@@ -11,7 +11,7 @@ use tauri::image::Image;
 use tauri::tray::TrayIconId;
 use tauri::AppHandle;
 
-const HEARTBEAT_STALE_MS: i64 = 12 * 60 * 1000; // 12 min (heartbeat interval is 5 min)
+const HEARTBEAT_STALE_MS: i64 = 12 * 60 * 1000; // 12 min (JS heartbeat interval is 60s)
 
 static PENDING_UPLOADS: AtomicU32 = AtomicU32::new(0);
 static SPOOL_PENDING: AtomicU32 = AtomicU32::new(0);

@@ -741,7 +741,9 @@ function reportUploadQueueStatsToRust() {
  * or `VITE_UCE_UPLOAD_URL` when unset. Best-effort. `getDeviceId` is defined later; safe at call time.
  */
 async function sendUceHeartbeat() {
-  if (uceTraySyncPaused) return;
+  // NB: heartbeats continue even when the CCC mirror is paused, so a paused
+  // machine stays "Connected" in the portal (reported as ccc_sync_paused via
+  // device_health) instead of going stale/offline after ~10 min.
   const bid = getBusinessId();
   const upload = getBackendUploadUrl();
   const key = getSupabaseAnonKey();
@@ -3601,7 +3603,9 @@ async function enqueueUploadSpool(filePath, fingerprint, source = "auto_pdf_fold
 }
 
 async function processUploadSpool(source = "interval") {
-  if (uceTraySyncPaused || uploadSpoolBusy) return;
+  // Pausing the mirror must not stop document capture/upload from printers and
+  // watched folders — only the CCC portal mirror is paused.
+  if (uploadSpoolBusy) return;
   let batch;
   try {
     batch = await invoke("uce_spool_claim_batch", { limit: 5 });
@@ -7746,15 +7750,14 @@ async function uceRuntimePrinterCheck() {
   try {
     await listen("uce:pause", () => {
       uceTraySyncPaused = true;
-      if (uceHeartbeatIntervalId !== null) {
-        clearInterval(uceHeartbeatIntervalId);
-        uceHeartbeatIntervalId = null;
-      }
-      console.info("[UCE] tray: sync paused (CCC package + heartbeat)");
+      // Keep the heartbeat interval running so the device stays online in the
+      // portal (shown as "Paused"), and keep capture/uploads flowing. Only the
+      // CCC mirror poll loop is paused (Rust-side is_sync_paused()).
+      console.info("[UCE] tray: CCC mirror paused (heartbeat + capture continue)");
     });
     await listen("uce:resume", () => {
       uceTraySyncPaused = false;
-      console.info("[UCE] tray: sync resumed");
+      console.info("[UCE] tray: CCC mirror resumed");
       void ensureUceDesktopPresence();
     });
   } catch (e) {

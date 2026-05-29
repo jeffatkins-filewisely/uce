@@ -45,8 +45,8 @@ Right-click (^ by clock):
 |------|--------|
 | **Open FileWisely UCE** | Show/focus overlay |
 | **Open CCC Import Folder** | Explorer → `C:\FileWisely\CCC Import` |
-| **Pause Sync** | Stops CCC claim loop + heartbeat (emits `uce:pause`) |
-| **Resume Sync** | Resumes (emits `uce:resume`) |
+| **Pause Mirror** | Pauses only the CCC mirror claim loop (emits `uce:pause`). Heartbeat + document capture/upload keep running, so the device stays online (shown as "Paused"). |
+| **Resume Mirror** | Resumes the CCC mirror (emits `uce:resume`) |
 | **CCC sync: …** | Status line (Paused / Offline / pending / syncing) |
 | *Support* | Connection Status, Connect, Copy Diagnostic Report, Reload |
 | **Quit** | Exit process |

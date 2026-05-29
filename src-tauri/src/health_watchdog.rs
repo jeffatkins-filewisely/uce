@@ -101,9 +101,8 @@ fn run_watchdog_tick(app: &AppHandle) {
     if !tenant_configured(app) {
         return;
     }
-    if ccc_package_sync::is_sync_paused() {
-        return;
-    }
+    // The watchdog keeps monitoring heartbeat health / resume gaps even while the
+    // CCC mirror is paused, so a paused machine still recovers presence after sleep.
 
     let now = now_unix_ms();
     let last_tick = LAST_WATCHDOG_TICK_MS.load(Ordering::Relaxed);

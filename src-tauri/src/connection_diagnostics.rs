@@ -243,9 +243,8 @@ pub async fn post_ingest_heartbeat(app: &AppHandle, device_id: &str) -> Heartbea
 
 /// Refresh tray after sleep when JS `setInterval` may not run (WebView backgrounded).
 pub fn spawn_rust_heartbeat_if_stale(app: &AppHandle, reason: &str, force: bool) {
-    if ccc_package_sync::is_sync_paused() {
-        return;
-    }
+    // Heartbeat keeps the device online even while the CCC mirror is paused, so
+    // we no longer skip the fallback heartbeat on pause.
     let cfg = tenant_config::load_tenant_config(app).unwrap_or_default();
     if cfg.business_id.trim().is_empty()
         || cfg.backend_url.trim().is_empty()
