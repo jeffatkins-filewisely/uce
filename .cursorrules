@@ -1,0 +1,64 @@
+# UCE Sidekick — Cursor agent boundaries (uce repo)
+
+**Desktop only.** Production edge + Lovable portal: **https://github.com/jeffatkins-filewisely/filewisely** — open that folder for Theo, `supabase/functions`, migrations, claim-batch / ack.
+
+**Rule:** Edge/backend changes happen in **filewisely**. Desktop changes happen in **uce**. The `backend/` folder here is a mirror/reference, not production source of truth.
+
+Stay in the lane the user requests.
+
+## Default: server / edge lane (Lovable backend work)
+
+**Allowed** (edit freely when task is edge, SQL, or contracts):
+
+- `supabase/functions/**`
+- `supabase/migrations/**`
+- `supabase/_shared/**` (if present)
+- `backend/contracts/**`
+- `backend/supabase/**` (deploy reference / merge guides)
+- `docs/contracts/**`
+- `docs/CONTRACTS.md`, `docs/REPO_WORKFLOW.md`
+- `scripts/**` (deploy, ops — not `scripts/build-release.ps1` unless release task)
+
+**Forbidden** unless the user explicitly asks for desktop or portal UI:
+
+- `src/pages/**`, `src/components/**`, `src/integrations/**` — Lovable portal; do not redesign
+- `src-tauri/**` — Rust desktop agent (CCC sync, tray, capture pipeline)
+- `src/main.js`, `src/*.js`, `index.html`, `vite.config.js` — embedded webview UI
+- `.github/workflows/release.yml` — MSI/release pipeline
+- `installer/**` — NSIS/printer setup
+- `package.json` / `src-tauri/tauri.conf.json` version bumps — only for explicit Sidekick release tasks
+- Auto-generated or design-system files the user did not name
+
+## Desktop / Sidekick lane
+
+When the user says Sidekick, desktop, Tauri, mirror writer, or CCC Import:
+
+**Allowed:**
+
+- `src-tauri/**`
+- `src/**` (webview shell only)
+- `docs/CCC_PACKAGE_SYNC.md`, `docs/DEVICE_HEALTH.md`, `docs/TRAY_SILENT_INSTALL.md`
+- `docs/contracts/**`, `backend/contracts/**` (keep in sync with edge)
+- `connection-doctor.html`, `src/connection-doctor.js`
+
+**Forbidden:**
+
+- `supabase/functions/**` — unless also syncing contracts both sides
+- Portal `src/pages/**` / Lovable components
+
+## Contracts
+
+- Claim-batch request: `business_id`, `device_id`, `limit`
+- Claim-batch response: `items[]` with mirror/cleanup job fields
+- Ack request: `business_id`, `device_id`, `items[]` with `queue_id`, `source_table`, `source_id`, `status`, optional `written_path`
+- See `docs/CONTRACTS.md` — update JSON Schema, Zod, and Rust together
+
+## Git
+
+- `git pull` before editing; `git push` after (user commits unless asked)
+- Do not force-push `main`
+
+## Prompt hygiene
+
+- User should name exact paths: `supabase/functions/ccc-package-claim-batch/index.ts`
+- If the diff touches files outside the requested lane, stop and narrow scope

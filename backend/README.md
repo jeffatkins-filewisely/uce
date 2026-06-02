@@ -1,6 +1,6 @@
 # FileWisely backend — UCE device health (Phase C)
 
-Drop this folder into your **Lovable / FileWisely Supabase** project (not the Sidekick desktop repo).
+**Production backend** lives in **https://github.com/jeffatkins-filewisely/filewisely** (Lovable + Supabase). This `backend/` folder in **uce** is a mirror/deploy reference — edit edge functions in **filewisely**, then sync contracts here.
 
 UCE desktop **already sends** `device_health` on every heartbeat. This package:
 

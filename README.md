@@ -38,7 +38,9 @@ Example anchor/button: `href="uce://connect?business_id=${businessId}"` (or redi
 
 **`docs/CONTRACTS.md`** — JSON Schema + Rust preflight + Zod (`backend/contracts/`) for claim-batch, heartbeat, ack.
 
-**`backend/`** — FileWisely / Lovable deploy pack: SQL migration, `uce-ingest` heartbeat upsert, portal **UCE Devices** table component.
+**`backend/`** — Contract mirror + deploy reference. **Production edge** lives in **[filewisely](https://github.com/jeffatkins-filewisely/filewisely)**; edit Supabase functions there. See **`docs/REPO_WORKFLOW.md`**.
+
+**Two repos:** `filewisely` (Lovable + edge) · `uce` (this app, MSI releases).
 
 ## FileWisely PDF printer (Windows)
 

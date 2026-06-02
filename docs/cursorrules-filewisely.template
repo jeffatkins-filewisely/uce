@@ -1,0 +1,41 @@
+# FileWisely — Cursor agent boundaries (filewisely repo)
+# Copy to repo root as `.cursorrules` after cloning filewisely.git
+
+Production backend + Lovable portal. **Not** the UCE Sidekick desktop app (that is https://github.com/jeffatkins-filewisely/uce).
+
+## Default lane: server + contracts
+
+**Allowed:**
+
+- `supabase/functions/**`
+- `supabase/migrations/**`
+- `_shared/**` (contracts, helpers)
+- `backend/contracts/**` (if present)
+- `scripts/**` (ops/deploy)
+
+**Forbidden** unless the user explicitly requests portal UI:
+
+- `src/pages/**`, `src/components/**`, `src/integrations/**` — Lovable UI; do not redesign
+- Design system, auto-generated Lovable files the user did not name
+
+## Portal UI lane
+
+Only when the user explicitly names files under `src/pages` or `src/components`.
+
+## Sidekick / desktop
+
+Do **not** edit Tauri or Sidekick code here — that lives in the **uce** repo. Desktop contract mirrors in **uce** are updated via sync after edge changes.
+
+## Supabase
+
+- Project: `pujwbzqnoevqxrwipnwo` (`supabase link`)
+- Deploy: `supabase functions deploy <name>`
+
+## Contracts
+
+- `ccc-package-claim-batch`, `ccc-package-ack`, `uce-ingest` must stay aligned with **uce** `docs/contracts/` when desktop behavior depends on shapes
+
+## Git
+
+- `git pull` before editing; `git push` after
+- Do not force-push `main`
