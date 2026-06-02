@@ -14,8 +14,15 @@ use tauri::menu::MenuItem;
 use tauri::{AppHandle, Emitter, Wry};
 
 const POLL_INTERVAL_SECS: u64 = 15;
+/// Cap the inter-poll sleep when the backend is failing or the kill switch is
+/// on, so a fleet of Sidekicks can't hammer a degraded endpoint every 15s.
+/// (2026-06 incident: fixed 15s polling + 120s client timeout kept the
+/// Postgres pool pinned during a slow-claim window.)
+const POLL_BACKOFF_MAX_SECS: u64 = 300;
 const CLAIM_LIMIT: u32 = 25;
-const HTTP_TIMEOUT_SECS: u64 = 120;
+/// Fail fast on a slow claim/ack so a hung request can't hold a connection
+/// slot for minutes (was 120 during the 2026-06 pool-exhaustion incident).
+const HTTP_TIMEOUT_SECS: u64 = 30;
 
 static SYNCING_COUNT: AtomicU32 = AtomicU32::new(0);
 static SYNC_PAUSED: AtomicBool = AtomicBool::new(false);
@@ -1158,14 +1165,39 @@ async fn process_item(
     }
 }
 
-async fn poll_once(app: &AppHandle) {
+/// Outcome of one poll cycle, used to drive inter-poll backoff.
+enum PollOutcome {
+    /// Healthy: claimed work or confirmed empty queue. Reset cadence to base.
+    Ok,
+    /// Transient failure (network, HTTP, parse, or local config). Back off.
+    Failed,
+    /// Kill switch on (`disabled:true`). Healthy but parked — back off harder
+    /// so we don't hot-poll a deliberately-disabled endpoint every 15s.
+    Disabled,
+}
+
+/// ±20% jitter so a fleet of Sidekicks doesn't retry in lockstep (thundering herd).
+fn with_jitter(secs: u64) -> u64 {
+    if secs <= 1 {
+        return secs;
+    }
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos() as u64;
+    let span = (secs / 5).max(1);
+    secs.saturating_sub(span)
+        .saturating_add(nanos % (span * 2 + 1))
+}
+
+async fn poll_once(app: &AppHandle) -> PollOutcome {
     if !ccc_import_writable() {
         set_offline(
             true,
             Some("CCC Import folder not writable — check path exists and is not blocked by AV"),
         );
         crate::device_health::refresh_tray(app);
-        return;
+        return PollOutcome::Failed;
     }
 
     let tenant = match tenant_config::load_tenant_config(app) {
@@ -1174,7 +1206,7 @@ async fn poll_once(app: &AppHandle) {
             eprintln!("[UCE] ccc package sync: tenant: {e}");
             set_offline(true, Some(&format!("tenant config: {e}")));
             crate::device_health::refresh_tray(app);
-            return;
+            return PollOutcome::Failed;
         }
     };
 
@@ -1184,19 +1216,19 @@ async fn poll_once(app: &AppHandle) {
     if business_id.is_empty() {
         set_offline(true, Some("missing business_id in uce-tenant.json"));
         crate::device_health::refresh_tray(app);
-        return;
+        return PollOutcome::Failed;
     }
     if backend.is_empty() || token.is_empty() {
         set_offline(true, Some("missing backend_url or anon_key"));
         crate::device_health::refresh_tray(app);
-        return;
+        return PollOutcome::Failed;
     }
 
     let settings = ccc_import_settings::load_settings(app);
     let Some(root) = effective_ccc_package_root(&settings) else {
         set_offline(true, Some("ccc_package_root not configured in settings.json"));
         crate::device_health::refresh_tray(app);
-        return;
+        return PollOutcome::Failed;
     };
 
     let Some(base) = edge_functions_v1_base(backend) else {
@@ -1206,7 +1238,7 @@ async fn poll_once(app: &AppHandle) {
             Some("backend_url must contain /functions/v1 for claim-batch"),
         );
         crate::device_health::refresh_tray(app);
-        return;
+        return PollOutcome::Failed;
     };
 
     let device_id = match device_id::load_device_id(app) {
@@ -1217,7 +1249,7 @@ async fn poll_once(app: &AppHandle) {
                 Some("device_id not set — open UCE overlay to complete Connect"),
             );
             crate::device_health::refresh_tray(app);
-            return;
+            return PollOutcome::Failed;
         }
     };
 
@@ -1227,7 +1259,7 @@ async fn poll_once(app: &AppHandle) {
             eprintln!("[UCE] ccc package sync: http client: {e}");
             set_offline(true, Some(&format!("http client: {e}")));
             crate::device_health::refresh_tray(app);
-            return;
+            return PollOutcome::Failed;
         }
     };
 
@@ -1237,7 +1269,7 @@ async fn poll_once(app: &AppHandle) {
         eprintln!("CCC_PACKAGE_CLAIM_CONTRACT_FAIL {e}");
         set_offline(true, Some(&e));
         crate::device_health::refresh_tray(app);
-        return;
+        return PollOutcome::Failed;
     }
 
     let claim_endpoint = claim_url(&base);
@@ -1253,7 +1285,7 @@ async fn poll_once(app: &AppHandle) {
             eprintln!("CCC_PACKAGE_CLAIM_NETWORK err={}", e);
             set_offline(true, Some(&format!("claim network: {e}")));
             crate::device_health::refresh_tray(app);
-            return;
+            return PollOutcome::Failed;
         }
     };
 
@@ -1274,11 +1306,21 @@ async fn poll_once(app: &AppHandle) {
             )),
         );
         crate::device_health::refresh_tray(app);
-        return;
+        return PollOutcome::Failed;
     }
 
     set_offline(false, None);
     crate::device_health::note_ccc_sync_activity();
+
+    // Kill switch parked this shop (edge returns {items:[],disabled:true}).
+    // It's a healthy 200, but we back off so a fleet doesn't hot-poll a
+    // deliberately-disabled endpoint every 15s.
+    if claim_body_text.contains("\"disabled\":true") {
+        LAST_CLAIM_BATCH_COUNT.store(0, Ordering::Relaxed);
+        SYNCING_COUNT.store(0, Ordering::Relaxed);
+        crate::device_health::refresh_tray(app);
+        return PollOutcome::Disabled;
+    }
 
     let items = match parse_claim_batch_body(&claim_body_text) {
         Ok(v) => v,
@@ -1287,7 +1329,7 @@ async fn poll_once(app: &AppHandle) {
             note_claim_error(&e);
             LAST_CLAIM_BATCH_COUNT.store(0, Ordering::Relaxed);
             crate::device_health::refresh_tray(app);
-            return;
+            return PollOutcome::Failed;
         }
     };
 
@@ -1299,7 +1341,7 @@ async fn poll_once(app: &AppHandle) {
     if items.is_empty() {
         SYNCING_COUNT.store(0, Ordering::Relaxed);
         crate::device_health::refresh_tray(app);
-        return;
+        return PollOutcome::Ok;
     }
 
     let ack_endpoint = ack_url(&base);
@@ -1324,6 +1366,7 @@ async fn poll_once(app: &AppHandle) {
 
     SYNCING_COUNT.store(0, Ordering::Relaxed);
     crate::device_health::refresh_tray(app);
+    PollOutcome::Ok
 }
 
 async fn wait_for_device_id(app: &AppHandle, max_wait_secs: u64) {
@@ -1341,11 +1384,30 @@ async fn wait_for_device_id(app: &AppHandle, max_wait_secs: u64) {
 pub fn spawn_ccc_package_sync(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         wait_for_device_id(&app, 45).await;
+        let mut backoff = POLL_INTERVAL_SECS;
         loop {
-            if !is_sync_paused() {
-                poll_once(&app).await;
-            }
-            tokio::time::sleep(Duration::from_secs(POLL_INTERVAL_SECS)).await;
+            let next = if is_sync_paused() {
+                POLL_INTERVAL_SECS
+            } else {
+                match poll_once(&app).await {
+                    PollOutcome::Ok => {
+                        backoff = POLL_INTERVAL_SECS;
+                        POLL_INTERVAL_SECS
+                    }
+                    // Parked by kill switch: decay toward the cap, never faster
+                    // than once a minute.
+                    PollOutcome::Disabled => {
+                        backoff = backoff.saturating_mul(2).clamp(60, POLL_BACKOFF_MAX_SECS);
+                        backoff
+                    }
+                    // Transient failure: exponential decay up to the cap.
+                    PollOutcome::Failed => {
+                        backoff = backoff.saturating_mul(2).min(POLL_BACKOFF_MAX_SECS);
+                        backoff
+                    }
+                }
+            };
+            tokio::time::sleep(Duration::from_secs(with_jitter(next))).await;
         }
     });
 }
