@@ -36,6 +36,15 @@ pub fn last_error() -> String {
     LAST_ERROR.lock().map(|g| g.clone()).unwrap_or_default()
 }
 
+/// Clear the latched diagnostic error after recovery (e.g. a successful heartbeat).
+/// Without this, a single stale-heartbeat window leaves a permanent
+/// "heartbeat stale Nm" on the dashboard even after the device reconnects.
+pub fn clear_last_error() {
+    if let Ok(mut g) = LAST_ERROR.lock() {
+        g.clear();
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TrayHealthColor {

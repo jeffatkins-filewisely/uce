@@ -93,6 +93,11 @@ fn persist_heartbeat_outcome(app: &AppHandle, rec: &HeartbeatOutcomeRecord, log_
             format!("heartbeat {}: {}", rec.category, rec.message)
         };
         crate::device_health::set_last_error(err);
+    } else {
+        // Recovered: drop any latched connection error so the dashboard stops
+        // showing a stale "heartbeat stale Nm" on a device that is back online.
+        // CCC claim/write/ack errors keep their own dedicated surfaced fields.
+        crate::device_health::clear_last_error();
     }
     crate::device_health::refresh_tray(app);
 }
