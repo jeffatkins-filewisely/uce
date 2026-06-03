@@ -58,31 +58,46 @@ export async function handleUceHeartbeat(
   const dh = body.device_health ?? null;
   const now = new Date().toISOString();
 
+  // Field-preserving upsert (mirrors the deployed uce-ingest heartbeat handler).
+  // A lightweight Rust fallback heartbeat (sleep/wake, frozen WebView) sends no
+  // device_health and an empty user_id; those keys are OMITTED here so the
+  // upsert does not clobber the richer values written by the JS heartbeat.
   const row: Record<string, unknown> = {
     business_id: businessId,
     device_id: deviceId,
     device_name: body.device_name ?? null,
     agent_version: body.agent_version ?? dh?.agent_version ?? null,
     os_info: body.os_info ?? null,
-    user_id: body.user_id ?? null,
     last_seen_at: now,
     ccc_package_capable: !!body.ccc_package_capable,
     ccc_package_root: body.ccc_package_root ?? null,
-    device_health: dh,
-    tray_state: dh?.tray_state ?? null,
-    tenant_configured: dh?.tenant_configured ?? null,
-    heartbeat_ok: dh?.heartbeat_ok ?? null,
-    heartbeat_stale: dh?.heartbeat_stale ?? null,
-    last_heartbeat_category: dh?.last_heartbeat_category ?? null,
-    ccc_sync_paused: dh?.ccc_sync_paused ?? false,
-    ccc_sync_offline: dh?.ccc_sync_offline ?? false,
-    ccc_syncing_count: dh?.ccc_syncing_count ?? 0,
-    pending_uploads: dh?.pending_uploads ?? 0,
-    spool_pending: dh?.spool_pending ?? 0,
-    last_ccc_sync_at: msToIso(dh?.last_ccc_sync_unix_ms),
-    last_upload_at: msToIso(dh?.last_upload_unix_ms),
     updated_at: now,
   };
+
+  // Only set user_id when the caller actually knows it. Empty/absent leaves the
+  // existing pairing intact (the live handler additionally resolves it from a
+  // recent handshake — omitted in this reference copy).
+  const trimmedUserId = String(body.user_id ?? "").trim();
+  if (trimmedUserId) {
+    row.user_id = trimmedUserId;
+  }
+
+  // Only overwrite health when this heartbeat carried it.
+  if (dh && typeof dh === "object" && !Array.isArray(dh)) {
+    row.device_health = dh;
+    row.tray_state = dh.tray_state ?? null;
+    row.tenant_configured = dh.tenant_configured ?? null;
+    row.heartbeat_ok = dh.heartbeat_ok ?? null;
+    row.heartbeat_stale = dh.heartbeat_stale ?? null;
+    row.last_heartbeat_category = dh.last_heartbeat_category ?? null;
+    row.ccc_sync_paused = dh.ccc_sync_paused ?? false;
+    row.ccc_sync_offline = dh.ccc_sync_offline ?? false;
+    row.ccc_syncing_count = dh.ccc_syncing_count ?? 0;
+    row.pending_uploads = dh.pending_uploads ?? 0;
+    row.spool_pending = dh.spool_pending ?? 0;
+    row.last_ccc_sync_at = msToIso(dh.last_ccc_sync_unix_ms);
+    row.last_upload_at = msToIso(dh.last_upload_unix_ms);
+  }
 
   const { error } = await supabase
     .from(DEVICES_TABLE)

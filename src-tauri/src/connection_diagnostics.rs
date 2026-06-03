@@ -23,9 +23,15 @@ use crate::uce_webview_url;
 
 const OUTCOME_FILE: &str = "uce-heartbeat-outcome.json";
 const RECENT_LOG_MAX: usize = 40;
-/// Must match `device_health::HEARTBEAT_STALE_MS` (tray red threshold).
-const HEARTBEAT_STALE_MS: i64 = 12 * 60 * 1000;
-const RUST_HEARTBEAT_COOLDOWN_MS: i64 = 5 * 60 * 1000;
+/// How long the JS heartbeat may be silent before the Rust watchdog posts a
+/// fallback heartbeat itself. The WebView's `setInterval` freezes on sleep and
+/// is throttled when backgrounded, so we recover presence well under the portal
+/// "active" cutoff (10 min) and tray-red threshold (12 min) instead of letting a
+/// running agent with a dead WebView linger as stale for 10-20 min.
+const RUST_FALLBACK_STALE_MS: i64 = 4 * 60 * 1000;
+/// Min spacing between Rust fallback heartbeats so a persistently frozen WebView
+/// keeps re-pinging (~every 4-5 min) without spamming ingest.
+const RUST_HEARTBEAT_COOLDOWN_MS: i64 = 3 * 60 * 1000;
 
 static LAST_RUST_HEARTBEAT_ATTEMPT_MS: AtomicI64 = AtomicI64::new(0);
 
@@ -265,7 +271,7 @@ pub fn spawn_rust_heartbeat_if_stale(app: &AppHandle, reason: &str, force: bool)
     } else {
         i64::MAX
     };
-    let stale = hb.last_unix_ms > 0 && hb_age > HEARTBEAT_STALE_MS;
+    let stale = hb.last_unix_ms > 0 && hb_age > RUST_FALLBACK_STALE_MS;
     if !force && !stale {
         return;
     }

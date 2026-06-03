@@ -15,7 +15,7 @@ const LOG_PATH: &str = r"C:\FileWisely\logs\uce-health.log";
 const CHECK_INTERVAL_SECS: u64 = 60;
 /// Watchdog ticks every 60s; a much larger gap implies sleep/hibernate.
 const WATCHDOG_RESUME_GAP_MS: i64 = 90 * 1000;
-const HEARTBEAT_NUDGE_MS: i64 = 10 * 60 * 1000;
+const HEARTBEAT_NUDGE_MS: i64 = 3 * 60 * 1000;
 const CCC_ACTIVITY_STALE_MS: i64 = 20 * 60 * 1000;
 const WEBVIEW_RECOVERY_COOLDOWN_MS: i64 = 3 * 60 * 1000;
 const LOG_MAX_LINES: usize = 400;
@@ -125,6 +125,13 @@ fn run_watchdog_tick(app: &AppHandle) {
     } else {
         i64::MAX
     };
+
+    // Steady-state fallback: when the JS heartbeat has gone quiet (WebView frozen
+    // after sleep or throttled while backgrounded), post a Rust heartbeat directly
+    // so the device keeps showing Active instead of drifting into a 10-20 min stale
+    // window. spawn_rust_heartbeat_if_stale self-guards on its own staleness
+    // threshold + cooldown, so calling it every tick is cheap and idempotent.
+    connection_diagnostics::spawn_rust_heartbeat_if_stale(app, "watchdog_tick", false);
 
     if hb.last_unix_ms > 0 && hb_age > HEARTBEAT_NUDGE_MS {
         let last_nudge = LAST_HEARTBEAT_NUDGE_MS.load(Ordering::Relaxed);
