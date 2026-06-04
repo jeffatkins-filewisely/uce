@@ -1041,7 +1041,66 @@ fn ensure_path_under_root(root: &std::path::Path, target: &std::path::Path) -> R
     Ok(())
 }
 
-fn delete_folder_under_root(root: &str, target_path_hint: &str) -> Result<(), String> {
+/// Result of a `delete_folder` job, kept distinct so the ack log can tell a
+/// real removal apart from a drift-recovery sweep or a no-op. All three are
+/// "resolved" (acked `ok`); only `Err` retries.
+enum DeleteOutcome {
+    /// Exact hinted folder existed and was removed.
+    Removed,
+    /// Exact hint missed, but `n` sibling folder(s) sharing the RO token were
+    /// removed (on-disk name had drifted from the recomputed hint).
+    RemovedByPrefix(usize),
+    /// Nothing on disk for this RO — already clean.
+    AlreadyGone,
+}
+
+/// Stable RO key from a CCC folder hint like `RO-90172 Jane Doe - 2021 Tesla`.
+/// Returns `RO-90172` (everything up to the first space). `None` when the hint
+/// isn't an RO folder or is the pre-RO `no-ro` sentinel (too broad to match
+/// safely).
+fn ro_prefix_token(hint: &str) -> Option<String> {
+    let token = hint.split_whitespace().next()?;
+    if !token.starts_with("RO-") || token.len() <= 3 {
+        return None;
+    }
+    if token.eq_ignore_ascii_case("RO-no-ro") {
+        return None;
+    }
+    Some(token.to_string())
+}
+
+/// Sweep child folders of `root` that share the hint's RO token but whose full
+/// name drifted from the exact hint (older naming scheme, edited
+/// customer/vehicle, manual rename). Returns how many were removed.
+fn delete_siblings_by_ro_prefix(root: &std::path::Path, hint: &str) -> Result<usize, String> {
+    let Some(token) = ro_prefix_token(hint) else {
+        return Ok(0);
+    };
+    let entries = std::fs::read_dir(root).map_err(|e| format!("read_dir root: {e}"))?;
+    let with_space = format!("{token} ");
+    let mut removed = 0usize;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        // Match `RO-90172` exactly or `RO-90172 …` on a space boundary so
+        // `RO-9017` never swallows `RO-90172`.
+        if name != token && !name.starts_with(&with_space) {
+            continue;
+        }
+        ensure_path_under_root(root, &path)?;
+        std::fs::remove_dir_all(&path).map_err(|e| classify_write_error(&e))?;
+        eprintln!("CCC_PACKAGE_DELETE_PREFIX child={name} token={token}");
+        removed += 1;
+    }
+    Ok(removed)
+}
+
+fn delete_folder_under_root(root: &str, target_path_hint: &str) -> Result<DeleteOutcome, String> {
     let hint = target_path_hint.trim();
     if hint.is_empty() {
         return Err("missing target_path_hint".to_string());
@@ -1051,13 +1110,22 @@ fn delete_folder_under_root(root: &str, target_path_hint: &str) -> Result<(), St
     };
     let root_path = std::path::Path::new(root);
     ensure_path_under_root(root_path, &dir)?;
-    if !dir.exists() {
-        return Ok(());
+
+    if dir.is_dir() {
+        std::fs::remove_dir_all(&dir).map_err(|e| classify_write_error(&e))?;
+        return Ok(DeleteOutcome::Removed);
     }
-    if !dir.is_dir() {
+    if dir.exists() {
         return Err("target_not_a_directory".to_string());
     }
-    std::fs::remove_dir_all(&dir).map_err(|e| classify_write_error(&e))
+
+    // Exact folder is gone. Don't silently ack success — the orphan may still
+    // be on disk under a drifted name. The leading RO token is stable, so
+    // sweep any sibling folders that share it before giving up.
+    match delete_siblings_by_ro_prefix(root_path, hint)? {
+        0 => Ok(DeleteOutcome::AlreadyGone),
+        n => Ok(DeleteOutcome::RemovedByPrefix(n)),
+    }
 }
 
 async fn process_delete_folder(root: &str, item: &ClaimItem, pending: &mut Vec<PendingAck>) {
@@ -1076,13 +1144,27 @@ async fn process_delete_folder(root: &str, item: &ClaimItem, pending: &mut Vec<P
         }
     };
     match delete_folder_under_root(root, hint) {
-        Ok(()) => {
-            eprintln!(
-                "CCC_PACKAGE_DELETE_OK queue_id={} target={}",
-                item.queue_id, hint
-            );
+        Ok(outcome) => {
+            match &outcome {
+                DeleteOutcome::Removed => eprintln!(
+                    "CCC_PACKAGE_DELETE_OK queue_id={} target={}",
+                    item.queue_id, hint
+                ),
+                DeleteOutcome::RemovedByPrefix(n) => eprintln!(
+                    "CCC_PACKAGE_DELETE_OK_PREFIX queue_id={} target={} removed={}",
+                    item.queue_id, hint, n
+                ),
+                DeleteOutcome::AlreadyGone => eprintln!(
+                    "CCC_PACKAGE_DELETE_NOOP queue_id={} target={} folder_already_absent",
+                    item.queue_id, hint
+                ),
+            }
             queue_ack(pending, item, "ok", None, None);
-            note_write_ok();
+            // Only stamp the write-ok health timer when we actually removed
+            // something; a no-op shouldn't mask a stalled writer.
+            if !matches!(outcome, DeleteOutcome::AlreadyGone) {
+                note_write_ok();
+            }
         }
         Err(msg) => {
             eprintln!(
