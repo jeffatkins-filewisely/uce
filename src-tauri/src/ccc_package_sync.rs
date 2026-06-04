@@ -1378,6 +1378,16 @@ fn folder_customer_part(name: &str) -> String {
     n.split(" - ").next().unwrap_or(n).trim().to_string()
 }
 
+/// CCC default placeholders that are NOT a real identity. A folder whose name is
+/// one of these (and has no RO#) can't be tied to a dashboard portal, so per the
+/// product rule ("no customer name or RO → delete") it's garbage, not a merge target.
+fn is_placeholder_name(s: &str) -> bool {
+    matches!(
+        s.trim().to_lowercase().as_str(),
+        "" | "customer" | "vehicle" | "no vehicle info"
+    )
+}
+
 #[derive(Debug)]
 enum ReconcileAction {
     Keep(String),
@@ -1416,7 +1426,9 @@ fn plan_reconcile(root: &str, portals: &[ManifestPortal]) -> Result<ReconcilePla
         }
         if p.ro_numbers.is_empty() {
             if let Some(name) = p.customer_name.as_deref() {
-                prero_by_name.insert(name.trim().to_lowercase(), i);
+                if !is_placeholder_name(name) {
+                    prero_by_name.insert(name.trim().to_lowercase(), i);
+                }
             }
         }
     }
@@ -1441,9 +1453,12 @@ fn plan_reconcile(root: &str, portals: &[ManifestPortal]) -> Result<ReconcilePla
         let matched = if !ros.is_empty() {
             ros.iter().find_map(|r| by_ro.get(r.trim()).copied())
         } else {
-            prero_by_name
-                .get(&folder_customer_part(&name).to_lowercase())
-                .copied()
+            let cust = folder_customer_part(&name);
+            if is_placeholder_name(&cust) {
+                None // placeholder name + no RO → unidentifiable → delete
+            } else {
+                prero_by_name.get(&cust.to_lowercase()).copied()
+            }
         };
 
         match matched {
