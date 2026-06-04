@@ -823,6 +823,53 @@ pub(crate) fn path_under_root(root: &str, hint: &str) -> Option<PathBuf> {
     append_sub_folder(PathBuf::from(root), hint)
 }
 
+/// Pick the RO folder to write into. Normally `{root}/{ro_seg}`, but if that
+/// exact folder doesn't exist yet and a sibling sharing the same RO token does
+/// (the name drifted since it was created — corrected vehicle text, a linked
+/// second RO, etc.), reuse the sibling so we don't mint a duplicate and split
+/// the customer's files. When several siblings exist, prefer the most recently
+/// modified. Non-RO segments (no `RO-` token) always use the exact name.
+fn resolve_ro_dir(root: &str, ro_seg: &str) -> PathBuf {
+    let exact = PathBuf::from(root).join(ro_seg);
+    if exact.exists() {
+        return exact;
+    }
+    let Some(token) = ro_prefix_token(ro_seg) else {
+        return exact;
+    };
+    let with_space = format!("{token} ");
+    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return exact;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name != token && !name.starts_with(&with_space) {
+            continue;
+        }
+        let mtime = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+        if best.as_ref().map(|(bt, _)| mtime > *bt).unwrap_or(true) {
+            best = Some((mtime, path));
+        }
+    }
+    match best {
+        Some((_, sib)) => {
+            eprintln!("CCC_PACKAGE_REUSE_RO_FOLDER token={token} reused={}", sib.display());
+            sib
+        }
+        None => exact,
+    }
+}
+
 /// Mirror writer path: `sub_folder` → `{root}/{ro}/{sub_folder}/{file}`; legacy `bucket`; else flat under RO.
 pub(crate) fn destination_path_for_item(root: &str, item: &ClaimItem) -> PathBuf {
     let ro = item
@@ -835,7 +882,7 @@ pub(crate) fn destination_path_for_item(root: &str, item: &ClaimItem) -> PathBuf
         .as_deref()
         .and_then(sanitize_path_segment)
         .unwrap_or_else(|| "file".to_string());
-    let mut base = PathBuf::from(root).join(ro);
+    let mut base = resolve_ro_dir(root, &ro);
 
     if let Some(sf) = item.sub_folder.as_deref().filter(|s| !s.trim().is_empty()) {
         if let Some(with_sub) = append_sub_folder(base.clone(), sf) {
