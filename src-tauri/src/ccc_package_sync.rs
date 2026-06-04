@@ -5,13 +5,14 @@ use crate::device_id;
 use crate::tenant_config;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tauri::menu::MenuItem;
-use tauri::{AppHandle, Emitter, Wry};
+use tauri::{AppHandle, Emitter, Manager, Wry};
 
 const POLL_INTERVAL_SECS: u64 = 15;
 /// Cap the inter-poll sleep when the backend is failing or the kill switch is
@@ -1294,6 +1295,272 @@ async fn process_item(
     }
 }
 
+// ───────────────────────── CCC folder reconcile (dry-run) ─────────────────────────
+//
+// Rule, per product: the CCC Import folder should equal the dashboard. Every
+// active portal gets exactly one canonically-named folder; anything else (drift
+// duplicates, legacy `RO-no-ro …`, folders for portals that left the dashboard)
+// shouldn't be there. Only the desktop can see the disk, so this reconciles the
+// on-disk tree against `ccc-mirror-manifest` (the authoritative dashboard list).
+//
+// SAFETY: this build is REPORT-ONLY. It computes and logs/writes the plan
+// (KEEP / WOULD-MERGE / WOULD-DELETE / UNKNOWN) but never touches a file. The
+// merge/delete executor lands in a follow-up once the dry-run report is vetted.
+
+const RECONCILE_INTERVAL_SECS: i64 = 900; // at most once every 15 min
+static RECONCILE_LAST_RUN_MS: AtomicI64 = AtomicI64::new(0);
+
+fn manifest_url(base: &str) -> String {
+    format!("{base}/ccc-mirror-manifest")
+}
+
+#[derive(Debug, Deserialize)]
+struct ManifestPortal {
+    #[allow(dead_code)]
+    policy_share_id: Option<String>,
+    customer_name: Option<String>,
+    #[serde(default)]
+    ro_numbers: Vec<String>,
+    #[allow(dead_code)]
+    status: Option<String>,
+    canonical_folder: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MirrorManifest {
+    #[serde(default)]
+    portals: Vec<ManifestPortal>,
+}
+
+async fn fetch_manifest(
+    client: &reqwest::Client,
+    base: &str,
+    token: &str,
+    business_id: &str,
+) -> Result<MirrorManifest, String> {
+    #[derive(Serialize)]
+    struct Body<'a> {
+        business_id: &'a str,
+    }
+    let resp = post_json(client, &manifest_url(base), token, &Body { business_id })
+        .await
+        .map_err(|e| format!("manifest request: {e}"))?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(format!(
+            "manifest HTTP {status}: {}",
+            text.chars().take(200).collect::<String>()
+        ));
+    }
+    serde_json::from_str(&text).map_err(|e| format!("manifest parse: {e}"))
+}
+
+/// RO numbers embedded in an on-disk folder name. Canonical/legacy forms start
+/// with `RO-<ro>[-<ro2>…]` then a space; `RO-no-ro` or no `RO-` prefix = pre-RO.
+fn folder_ro_numbers(name: &str) -> Vec<String> {
+    let Some(token) = name.split_whitespace().next() else {
+        return vec![];
+    };
+    let Some(rest) = token.strip_prefix("RO-") else {
+        return vec![];
+    };
+    rest.split('-')
+        .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("no") && !s.eq_ignore_ascii_case("ro"))
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// Best-effort customer-name part of a pre-RO / legacy folder name, for matching
+/// name-only portals: `RO-no-ro NAME - VEH` → NAME; `NAME - VEH` → NAME; `NAME` → NAME.
+fn folder_customer_part(name: &str) -> String {
+    let n = name.strip_prefix("RO-no-ro ").unwrap_or(name);
+    n.split(" - ").next().unwrap_or(n).trim().to_string()
+}
+
+#[derive(Debug)]
+enum ReconcileAction {
+    Keep(String),
+    /// On-disk `from` belongs to a live portal but isn't the canonical name.
+    Merge { from: String, into: String },
+    /// Mirror-managed folder for no live portal → should be removed.
+    Delete(String),
+    /// Unrecognized folder (not mirror-managed) → left alone, reported for review.
+    Unknown(String),
+}
+
+struct ReconcilePlan {
+    actions: Vec<ReconcileAction>,
+    missing: usize,
+}
+
+/// Pure, read-only: compare on-disk folders under `root` to the manifest.
+fn plan_reconcile(root: &str, portals: &[ManifestPortal]) -> Result<ReconcilePlan, String> {
+    let mut desired: Vec<String> = Vec::with_capacity(portals.len());
+    let mut by_ro: HashMap<String, usize> = HashMap::new();
+    let mut prero_by_name: HashMap<String, usize> = HashMap::new();
+    let mut desired_set: HashSet<String> = HashSet::new();
+
+    for (i, p) in portals.iter().enumerate() {
+        let canon = p
+            .canonical_folder
+            .as_deref()
+            .and_then(sanitize_path_segment)
+            .unwrap_or_default();
+        desired.push(canon.clone());
+        if !canon.is_empty() {
+            desired_set.insert(canon);
+        }
+        for ro in &p.ro_numbers {
+            by_ro.insert(ro.trim().to_string(), i);
+        }
+        if p.ro_numbers.is_empty() {
+            if let Some(name) = p.customer_name.as_deref() {
+                prero_by_name.insert(name.trim().to_lowercase(), i);
+            }
+        }
+    }
+
+    let mut portal_has_folder = vec![false; portals.len()];
+    let mut actions: Vec<ReconcileAction> = Vec::new();
+
+    let entries = std::fs::read_dir(root).map_err(|e| format!("read_dir root: {e}"))?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()).map(str::to_string) else {
+            continue;
+        };
+        if name.starts_with('.') {
+            continue; // hidden / probe artifacts
+        }
+
+        let ros = folder_ro_numbers(&name);
+        let matched = if !ros.is_empty() {
+            ros.iter().find_map(|r| by_ro.get(r.trim()).copied())
+        } else {
+            prero_by_name
+                .get(&folder_customer_part(&name).to_lowercase())
+                .copied()
+        };
+
+        match matched {
+            Some(pi) => {
+                portal_has_folder[pi] = true;
+                if desired_set.contains(&name) {
+                    actions.push(ReconcileAction::Keep(name));
+                } else {
+                    actions.push(ReconcileAction::Merge {
+                        from: name,
+                        into: desired[pi].clone(),
+                    });
+                }
+            }
+            None => {
+                // Only treat recognizably mirror-managed folders as deletable;
+                // anything else is left alone and surfaced for human review.
+                if name.starts_with("RO-") {
+                    actions.push(ReconcileAction::Delete(name));
+                } else {
+                    actions.push(ReconcileAction::Unknown(name));
+                }
+            }
+        }
+    }
+
+    let missing = portal_has_folder.iter().filter(|&&h| !h).count();
+    Ok(ReconcilePlan { actions, missing })
+}
+
+fn log_reconcile_plan(root: &str, plan: &ReconcilePlan) {
+    let (mut keep, mut merge, mut del, mut unknown) = (0u32, 0u32, 0u32, 0u32);
+    for a in &plan.actions {
+        match a {
+            ReconcileAction::Keep(_) => keep += 1,
+            ReconcileAction::Merge { .. } => merge += 1,
+            ReconcileAction::Delete(_) => del += 1,
+            ReconcileAction::Unknown(_) => unknown += 1,
+        }
+    }
+    eprintln!(
+        "CCC_RECONCILE_DRYRUN root={root} keep={keep} would_merge={merge} would_delete={del} unknown={unknown} missing_on_disk={}",
+        plan.missing
+    );
+    for a in &plan.actions {
+        match a {
+            ReconcileAction::Merge { from, into } => {
+                eprintln!("CCC_RECONCILE_WOULD_MERGE from={from:?} into={into:?}");
+            }
+            ReconcileAction::Delete(name) => {
+                eprintln!("CCC_RECONCILE_WOULD_DELETE folder={name:?}");
+            }
+            ReconcileAction::Unknown(name) => {
+                eprintln!("CCC_RECONCILE_UNKNOWN folder={name:?} (left alone)");
+            }
+            ReconcileAction::Keep(_) => {}
+        }
+    }
+}
+
+fn write_reconcile_report(app: &AppHandle, root: &str, plan: &ReconcilePlan) {
+    let Ok(dir) = app.path().app_data_dir() else {
+        return;
+    };
+    let mut out = String::new();
+    out.push_str(&format!("CCC reconcile dry-run @ {}\nroot: {root}\n\n", now_unix_ms()));
+    for a in &plan.actions {
+        match a {
+            ReconcileAction::Keep(n) => out.push_str(&format!("KEEP    {n}\n")),
+            ReconcileAction::Merge { from, into } => {
+                out.push_str(&format!("MERGE   {from}  ->  {into}\n"))
+            }
+            ReconcileAction::Delete(n) => out.push_str(&format!("DELETE  {n}\n")),
+            ReconcileAction::Unknown(n) => out.push_str(&format!("UNKNOWN {n}\n")),
+        }
+    }
+    out.push_str(&format!("\nmissing_on_disk (will mirror when files arrive): {}\n", plan.missing));
+    let path = dir.join("ccc-reconcile-report.txt");
+    if let Err(e) = std::fs::write(&path, out) {
+        eprintln!("CCC_RECONCILE_REPORT_WRITE_FAIL err={e}");
+    } else {
+        eprintln!("CCC_RECONCILE_REPORT path={}", path.display());
+    }
+}
+
+/// Throttled, report-only reconcile pass. Never mutates the filesystem.
+async fn maybe_run_reconcile(
+    app: &AppHandle,
+    client: &reqwest::Client,
+    base: &str,
+    token: &str,
+    business_id: &str,
+    root: &str,
+) {
+    let now = now_unix_ms();
+    let last = RECONCILE_LAST_RUN_MS.load(Ordering::Relaxed);
+    if last != 0 && now - last < RECONCILE_INTERVAL_SECS * 1000 {
+        return;
+    }
+    RECONCILE_LAST_RUN_MS.store(now, Ordering::Relaxed);
+
+    let manifest = match fetch_manifest(client, base, token, business_id).await {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("CCC_RECONCILE_MANIFEST_FAIL err={e}");
+            return;
+        }
+    };
+    match plan_reconcile(root, &manifest.portals) {
+        Ok(plan) => {
+            log_reconcile_plan(root, &plan);
+            write_reconcile_report(app, root, &plan);
+        }
+        Err(e) => eprintln!("CCC_RECONCILE_PLAN_FAIL err={e}"),
+    }
+}
+
 /// Outcome of one poll cycle, used to drive inter-poll backoff.
 enum PollOutcome {
     /// Healthy: claimed work or confirmed empty queue. Reset cadence to base.
@@ -1450,6 +1717,10 @@ async fn poll_once(app: &AppHandle) -> PollOutcome {
         crate::device_health::refresh_tray(app);
         return PollOutcome::Disabled;
     }
+
+    // Report-only folder reconcile against the dashboard manifest (throttled,
+    // never mutates the filesystem in this build).
+    maybe_run_reconcile(app, &client, &base, token, business_id, &root).await;
 
     let items = match parse_claim_batch_body(&claim_body_text) {
         Ok(v) => v,
