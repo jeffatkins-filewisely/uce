@@ -1356,19 +1356,18 @@ async fn fetch_manifest(
     serde_json::from_str(&text).map_err(|e| format!("manifest parse: {e}"))
 }
 
-/// RO numbers embedded in an on-disk folder name. Canonical/legacy forms start
-/// with `RO-<ro>[-<ro2>…]` then a space; `RO-no-ro` or no `RO-` prefix = pre-RO.
-fn folder_ro_numbers(name: &str) -> Vec<String> {
-    let Some(token) = name.split_whitespace().next() else {
-        return vec![];
-    };
-    let Some(rest) = token.strip_prefix("RO-") else {
-        return vec![];
-    };
-    rest.split('-')
-        .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("no") && !s.eq_ignore_ascii_case("ro"))
-        .map(|s| s.to_string())
-        .collect()
+/// Full joined RO token of a folder/canonical name: the substring after `RO-`
+/// up to the first space — kept WHOLE, never split on `-`. `RO-90137-1 Bryant`
+/// → `90137-1`; `RO-90144-90145 Ben` → `90144-90145`. `None` for pre-RO /
+/// `RO-no-ro` / non-RO names. (RO ids can contain hyphens — `90137-1` is a base
+/// RO plus a supplement, a single id, NOT two ROs.)
+fn ro_token(name: &str) -> Option<String> {
+    let token = name.split_whitespace().next()?;
+    let rest = token.strip_prefix("RO-")?;
+    if rest.is_empty() || rest.eq_ignore_ascii_case("no-ro") {
+        return None;
+    }
+    Some(rest.to_string())
 }
 
 /// Best-effort customer-name part of a pre-RO / legacy folder name, for matching
@@ -1407,7 +1406,12 @@ struct ReconcilePlan {
 /// Pure, read-only: compare on-disk folders under `root` to the manifest.
 fn plan_reconcile(root: &str, portals: &[ManifestPortal]) -> Result<ReconcilePlan, String> {
     let mut desired: Vec<String> = Vec::with_capacity(portals.len());
-    let mut by_ro: HashMap<String, usize> = HashMap::new();
+    // Authoritative key: the full joined RO token from the canonical name
+    // ("90137-1", "90144-90145"). Never split.
+    let mut by_ro_token: HashMap<String, usize> = HashMap::new();
+    // Fallback: each whole ro_number (incl. supplement suffix) so a legacy
+    // folder carrying extra RO ids (e.g. "RO-82198-I-90153") still matches.
+    let mut by_ro_single: HashMap<String, usize> = HashMap::new();
     let mut prero_by_name: HashMap<String, usize> = HashMap::new();
     let mut desired_set: HashSet<String> = HashSet::new();
 
@@ -1417,12 +1421,18 @@ fn plan_reconcile(root: &str, portals: &[ManifestPortal]) -> Result<ReconcilePla
             .as_deref()
             .and_then(sanitize_path_segment)
             .unwrap_or_default();
+        if let Some(tok) = ro_token(&canon) {
+            by_ro_token.insert(tok, i);
+        }
+        for ro in &p.ro_numbers {
+            let r = ro.trim();
+            if !r.is_empty() {
+                by_ro_single.insert(r.to_string(), i);
+            }
+        }
         desired.push(canon.clone());
         if !canon.is_empty() {
             desired_set.insert(canon);
-        }
-        for ro in &p.ro_numbers {
-            by_ro.insert(ro.trim().to_string(), i);
         }
         if p.ro_numbers.is_empty() {
             if let Some(name) = p.customer_name.as_deref() {
@@ -1449,9 +1459,14 @@ fn plan_reconcile(root: &str, portals: &[ManifestPortal]) -> Result<ReconcilePla
             continue; // hidden / probe artifacts
         }
 
-        let ros = folder_ro_numbers(&name);
-        let matched = if !ros.is_empty() {
-            ros.iter().find_map(|r| by_ro.get(r.trim()).copied())
+        let matched = if let Some(tok) = ro_token(&name) {
+            // 1) exact full token — keeps 90137-1 distinct from 90137 and
+            //    matches multi-RO 90144-90145 as one unit.
+            by_ro_token.get(&tok).copied().or_else(|| {
+                // 2) fallback: any hyphen-separated component that is itself a
+                //    whole live ro_number (handles legacy "RO-82198-I-90153").
+                tok.split('-').find_map(|c| by_ro_single.get(c).copied())
+            })
         } else {
             let cust = folder_customer_part(&name);
             if is_placeholder_name(&cust) {
