@@ -7,7 +7,7 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -1295,7 +1295,7 @@ async fn process_item(
     }
 }
 
-// ───────────────────────── CCC folder reconcile (dry-run) ─────────────────────────
+// ───────────────────────── CCC folder reconcile ─────────────────────────
 //
 // Rule, per product: the CCC Import folder should equal the dashboard. Every
 // active portal gets exactly one canonically-named folder; anything else (drift
@@ -1303,9 +1303,11 @@ async fn process_item(
 // shouldn't be there. Only the desktop can see the disk, so this reconciles the
 // on-disk tree against `ccc-mirror-manifest` (the authoritative dashboard list).
 //
-// SAFETY: this build is REPORT-ONLY. It computes and logs/writes the plan
-// (KEEP / WOULD-MERGE / WOULD-DELETE / UNKNOWN) but never touches a file. The
-// merge/delete executor lands in a follow-up once the dry-run report is vetted.
+// SAFETY: planning (`plan_reconcile`) is always pure/read-only. Execution
+// (`apply_reconcile`) only runs when settings.ccc_reconcile_armed is true —
+// default false, so unarmed machines stay report-only. Merges are
+// collision-safe (move-in, suffix on name clash, never overwrite); deletes are
+// exact-folder under the root (`RO-90137` can't touch `RO-90137-1`).
 
 const RECONCILE_INTERVAL_SECS: i64 = 900; // at most once every 15 min
 static RECONCILE_LAST_RUN_MS: AtomicI64 = AtomicI64::new(0);
@@ -1534,12 +1536,13 @@ fn log_reconcile_plan(root: &str, plan: &ReconcilePlan) {
     }
 }
 
-fn write_reconcile_report(app: &AppHandle, root: &str, plan: &ReconcilePlan) {
+fn write_reconcile_report(app: &AppHandle, root: &str, plan: &ReconcilePlan, armed: bool) {
     let Ok(dir) = app.path().app_data_dir() else {
         return;
     };
+    let mode = if armed { "ARMED (applied)" } else { "dry-run" };
     let mut out = String::new();
-    out.push_str(&format!("CCC reconcile dry-run @ {}\nroot: {root}\n\n", now_unix_ms()));
+    out.push_str(&format!("CCC reconcile {mode} @ {}\nroot: {root}\n\n", now_unix_ms()));
     for a in &plan.actions {
         match a {
             ReconcileAction::Keep(n) => out.push_str(&format!("KEEP    {n}\n")),
@@ -1559,7 +1562,128 @@ fn write_reconcile_report(app: &AppHandle, root: &str, plan: &ReconcilePlan) {
     }
 }
 
-/// Throttled, report-only reconcile pass. Never mutates the filesystem.
+/// Collision-safe destination: returns `dir/file_name`, or `dir/name (n).ext`
+/// if the name is taken, so a merge never overwrites an existing file.
+fn unique_dest(dir: &Path, file_name: &str) -> PathBuf {
+    let candidate = dir.join(file_name);
+    if !candidate.exists() {
+        return candidate;
+    }
+    let p = Path::new(file_name);
+    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or(file_name);
+    let ext = p.extension().and_then(|s| s.to_str());
+    for n in 2..100_000u32 {
+        let nm = match ext {
+            Some(e) => format!("{stem} ({n}).{e}"),
+            None => format!("{stem} ({n})"),
+        };
+        let c = dir.join(&nm);
+        if !c.exists() {
+            return c;
+        }
+    }
+    dir.join(format!("{file_name}.{}", now_unix_ms()))
+}
+
+/// Recursively move everything from `from` into `into` (created if absent),
+/// renaming on filename collisions (never overwriting). Removes emptied
+/// directories as it goes. Returns the count of files moved.
+fn merge_dir_into(from: &Path, into: &Path) -> Result<u64, String> {
+    std::fs::create_dir_all(into).map_err(|e| format!("create {}: {e}", into.display()))?;
+    let mut moved = 0u64;
+    let entries = std::fs::read_dir(from).map_err(|e| format!("read {}: {e}", from.display()))?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()).map(str::to_string) else {
+            continue;
+        };
+        if path.is_dir() {
+            moved += merge_dir_into(&path, &into.join(&name))?;
+        } else {
+            let dest = unique_dest(into, &name);
+            // rename is atomic on the same volume; fall back to copy+remove.
+            if std::fs::rename(&path, &dest).is_err() {
+                std::fs::copy(&path, &dest).map_err(|e| format!("copy {}: {e}", path.display()))?;
+                let _ = std::fs::remove_file(&path);
+            }
+            moved += 1;
+        }
+    }
+    // Best-effort: drop the source dir now that its contents have moved.
+    let _ = std::fs::remove_dir(from);
+    Ok(moved)
+}
+
+#[derive(Default)]
+struct ReconcileStats {
+    merged: u32,
+    files_moved: u64,
+    deleted: u32,
+    errors: u32,
+}
+
+/// Execute a plan: merge drift duplicates into the canonical folder, then delete
+/// off-dashboard / placeholder folders. Keep/Unknown are left untouched. Every
+/// path is re-checked to be under `root` before any destructive op.
+fn apply_reconcile(root: &str, plan: &ReconcilePlan) -> ReconcileStats {
+    let root_path = Path::new(root);
+    let mut st = ReconcileStats::default();
+    for a in &plan.actions {
+        match a {
+            ReconcileAction::Merge { from, into } => {
+                let from_p = root_path.join(from);
+                let into_p = root_path.join(into);
+                if ensure_path_under_root(root_path, &from_p).is_err()
+                    || ensure_path_under_root(root_path, &into_p).is_err()
+                {
+                    eprintln!("CCC_RECONCILE_MERGE_SKIP unsafe from={from:?} into={into:?}");
+                    st.errors += 1;
+                    continue;
+                }
+                if !from_p.is_dir() {
+                    continue;
+                }
+                match merge_dir_into(&from_p, &into_p) {
+                    Ok(n) => {
+                        st.merged += 1;
+                        st.files_moved += n;
+                        eprintln!("CCC_RECONCILE_MERGED from={from:?} into={into:?} moved={n}");
+                    }
+                    Err(e) => {
+                        st.errors += 1;
+                        eprintln!("CCC_RECONCILE_MERGE_FAIL from={from:?} into={into:?} err={e}");
+                    }
+                }
+            }
+            ReconcileAction::Delete(name) => {
+                let p = root_path.join(name);
+                if ensure_path_under_root(root_path, &p).is_err() {
+                    eprintln!("CCC_RECONCILE_DELETE_SKIP unsafe folder={name:?}");
+                    st.errors += 1;
+                    continue;
+                }
+                if !p.is_dir() {
+                    continue;
+                }
+                match std::fs::remove_dir_all(&p) {
+                    Ok(()) => {
+                        st.deleted += 1;
+                        eprintln!("CCC_RECONCILE_DELETED folder={name:?}");
+                    }
+                    Err(e) => {
+                        st.errors += 1;
+                        eprintln!("CCC_RECONCILE_DELETE_FAIL folder={name:?} err={e}");
+                    }
+                }
+            }
+            ReconcileAction::Keep(_) | ReconcileAction::Unknown(_) => {}
+        }
+    }
+    st
+}
+
+/// Throttled reconcile pass. Planning is always read-only; execution happens
+/// only when `armed` (settings.ccc_reconcile_armed).
 async fn maybe_run_reconcile(
     app: &AppHandle,
     client: &reqwest::Client,
@@ -1567,6 +1691,7 @@ async fn maybe_run_reconcile(
     token: &str,
     business_id: &str,
     root: &str,
+    armed: bool,
 ) {
     let now = now_unix_ms();
     let last = RECONCILE_LAST_RUN_MS.load(Ordering::Relaxed);
@@ -1584,8 +1709,16 @@ async fn maybe_run_reconcile(
     };
     match plan_reconcile(root, &manifest.portals) {
         Ok(plan) => {
-            log_reconcile_plan(root, &plan);
-            write_reconcile_report(app, root, &plan);
+            if armed {
+                let st = apply_reconcile(root, &plan);
+                eprintln!(
+                    "CCC_RECONCILE_ARMED root={root} merged={} files_moved={} deleted={} errors={}",
+                    st.merged, st.files_moved, st.deleted, st.errors
+                );
+            } else {
+                log_reconcile_plan(root, &plan);
+            }
+            write_reconcile_report(app, root, &plan, armed);
         }
         Err(e) => eprintln!("CCC_RECONCILE_PLAN_FAIL err={e}"),
     }
@@ -1748,9 +1881,18 @@ async fn poll_once(app: &AppHandle) -> PollOutcome {
         return PollOutcome::Disabled;
     }
 
-    // Report-only folder reconcile against the dashboard manifest (throttled,
-    // never mutates the filesystem in this build).
-    maybe_run_reconcile(app, &client, &base, token, business_id, &root).await;
+    // Folder reconcile against the dashboard manifest (throttled). Planning is
+    // always read-only; merges/deletes apply only when ccc_reconcile_armed.
+    maybe_run_reconcile(
+        app,
+        &client,
+        &base,
+        token,
+        business_id,
+        &root,
+        settings.ccc_reconcile_armed,
+    )
+    .await;
 
     let items = match parse_claim_batch_body(&claim_body_text) {
         Ok(v) => v,

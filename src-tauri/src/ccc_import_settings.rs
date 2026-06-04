@@ -16,6 +16,12 @@ pub struct SidekickSettings {
     pub ccc_package_root: String,
     #[serde(default)]
     pub first_run_completed: bool,
+    /// Arms the destructive CCC folder reconcile (merge drift duplicates into the
+    /// canonical folder, delete off-dashboard/placeholder folders). Default false
+    /// → reconcile stays report-only. Set true per-machine to enable; read live
+    /// each poll cycle so no restart is needed.
+    #[serde(default)]
+    pub ccc_reconcile_armed: bool,
 }
 
 fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
