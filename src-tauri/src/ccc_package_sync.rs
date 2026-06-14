@@ -700,6 +700,7 @@ fn queue_ack(
 }
 
 async fn post_ack_batch(
+    app: &AppHandle,
     client: &reqwest::Client,
     url: &str,
     token: &str,
@@ -711,16 +712,7 @@ async fn post_ack_batch(
         return;
     }
 
-    if let Err(e) = crate::api_contracts::validate_package_ack_batch_request(
-        business_id,
-        device_id,
-        pending.len(),
-    ) {
-        eprintln!("CCC_PACKAGE_ACK_CONTRACT_FAIL batch err={}", e);
-        record_ack_fail(&format!("contract: {e}"));
-        return;
-    }
-
+    let mut valid: Vec<&PendingAck> = Vec::with_capacity(pending.len());
     for (i, ack) in pending.iter().enumerate() {
         if let Err(e) = crate::api_contracts::validate_package_ack_item(
             &ack.queue_id,
@@ -729,18 +721,38 @@ async fn post_ack_batch(
             &ack.source_id,
         ) {
             eprintln!(
-                "CCC_PACKAGE_ACK_CONTRACT_FAIL item[{}] queue_id={} err={}",
+                "CCC_PACKAGE_ACK_CONTRACT_FAIL item[{}] queue_id={} err={} (quarantined)",
                 i, ack.queue_id, e
             );
             record_ack_fail(&format!("contract item[{i}]: {e}"));
-            return;
+            continue;
         }
+        valid.push(ack);
+    }
+
+    if valid.is_empty() {
+        eprintln!("CCC_PACKAGE_ACK_SKIP all {} items failed contract validation", pending.len());
+        return;
+    }
+
+    if let Err(e) = crate::api_contracts::validate_package_ack_batch_request(
+        business_id,
+        device_id,
+        valid.len(),
+    ) {
+        eprintln!("CCC_PACKAGE_ACK_CONTRACT_FAIL batch err={}", e);
+        record_ack_fail(&format!("contract: {e}"));
+        let entries: Vec<crate::ack_spool::AckSpoolEntry> =
+            valid.iter().map(|a| pending_ack_to_spool_entry(a)).collect();
+        let n = crate::ack_spool::enqueue_batch(app, entries, &e);
+        eprintln!("CCC_PACKAGE_ACK_SPOOL_ENQUEUE reason=contract count={} pending={}", valid.len(), n);
+        return;
     }
 
     let body = AckBatchBody {
         business_id,
         device_id,
-        items: pending
+        items: valid
             .iter()
             .map(|a| AckItemBody {
                 queue_id: &a.queue_id,
@@ -756,36 +768,112 @@ async fn post_ack_batch(
     };
 
     eprintln!(
-        "CCC_PACKAGE_ACK_POST business_id={} device_id={} items={}",
+        "CCC_PACKAGE_ACK_POST business_id={} device_id={} items={} skipped_invalid={}",
         business_id,
         device_id,
-        pending.len()
+        valid.len(),
+        pending.len().saturating_sub(valid.len())
     );
 
     match post_json(client, url, token, &body).await {
         Ok(resp) if resp.status().is_success() => {
             eprintln!(
                 "CCC_PACKAGE_ACK_OK batch items={} ok={} fail={}",
-                pending.len(),
-                pending.iter().filter(|a| a.status == "ok").count(),
-                pending.iter().filter(|a| a.status == "error").count()
+                valid.len(),
+                valid.iter().filter(|a| a.status == "ok").count(),
+                valid.iter().filter(|a| a.status == "error").count()
             );
-            for _ in 0..pending.len() {
+            for _ in 0..valid.len() {
                 record_ack_ok();
             }
+            let ids: Vec<String> = valid.iter().map(|a| a.queue_id.clone()).collect();
+            let remaining = crate::ack_spool::remove_by_queue_ids(app, &ids);
+            eprintln!(
+                "CCC_PACKAGE_ACK_SPOOL_DRAIN_OK cleared={} spool_remaining={}",
+                ids.len(),
+                remaining
+            );
         }
         Ok(resp) => {
             let http = resp.status();
             let text = resp.text().await.unwrap_or_default();
             let preview: String = text.chars().take(300).collect();
             eprintln!("CCC_PACKAGE_ACK_HTTP batch http={} body={}", http, preview);
-            record_ack_fail(&format!("HTTP {http}: {preview}"));
+            let err = format!("HTTP {http}: {preview}");
+            record_ack_fail(&err);
+            let entries: Vec<crate::ack_spool::AckSpoolEntry> =
+                valid.iter().map(|a| pending_ack_to_spool_entry(a)).collect();
+            let n = crate::ack_spool::enqueue_batch(app, entries, &err);
+            eprintln!("CCC_PACKAGE_ACK_SPOOL_ENQUEUE reason=http count={} pending={}", valid.len(), n);
         }
         Err(e) => {
             eprintln!("CCC_PACKAGE_ACK_FAIL batch err={}", e);
-            record_ack_fail(&format!("network: {e}"));
+            let err = format!("network: {e}");
+            record_ack_fail(&err);
+            let entries: Vec<crate::ack_spool::AckSpoolEntry> =
+                valid.iter().map(|a| pending_ack_to_spool_entry(a)).collect();
+            let n = crate::ack_spool::enqueue_batch(app, entries, &err);
+            eprintln!("CCC_PACKAGE_ACK_SPOOL_ENQUEUE reason=network count={} pending={}", valid.len(), n);
         }
     }
+}
+
+fn pending_ack_to_spool_entry(ack: &PendingAck) -> crate::ack_spool::AckSpoolEntry {
+    crate::ack_spool::AckSpoolEntry {
+        queue_id: ack.queue_id.clone(),
+        source_table: ack.source_table.clone(),
+        source_id: ack.source_id.clone(),
+        status: ack.status.clone(),
+        error_message: ack.error_message.clone(),
+        written_path: ack.written_path.clone(),
+        sub_folder: ack.sub_folder.clone(),
+        action_type: ack.action_type.clone(),
+        enqueued_unix_ms: 0,
+        attempts: 0,
+        last_error: String::new(),
+    }
+}
+
+fn spool_entry_to_pending_ack(entry: &crate::ack_spool::AckSpoolEntry) -> PendingAck {
+    PendingAck {
+        queue_id: entry.queue_id.clone(),
+        source_table: entry.source_table.clone(),
+        source_id: entry.source_id.clone(),
+        status: entry.status.clone(),
+        error_message: entry.error_message.clone(),
+        written_path: entry.written_path.clone(),
+        sub_folder: entry.sub_folder.clone(),
+        action_type: entry.action_type.clone(),
+    }
+}
+
+async fn drain_ack_spool(
+    app: &AppHandle,
+    client: &reqwest::Client,
+    ack_endpoint: &str,
+    token: &str,
+    business_id: &str,
+    device_id: &str,
+) {
+    let spooled = crate::ack_spool::claim_batch(app, 25);
+    if spooled.is_empty() {
+        return;
+    }
+    eprintln!(
+        "CCC_PACKAGE_ACK_SPOOL_DRAIN start count={}",
+        spooled.len()
+    );
+    let pending: Vec<PendingAck> = spooled.iter().map(spool_entry_to_pending_ack).collect();
+    post_ack_batch(
+        app,
+        client,
+        ack_endpoint,
+        token,
+        business_id,
+        device_id,
+        &pending,
+    )
+    .await;
 }
 
 fn sanitize_path_segment(s: &str) -> Option<String> {
@@ -1832,6 +1920,17 @@ async fn poll_once(app: &AppHandle) -> PollOutcome {
     }
 
     let claim_endpoint = claim_url(&base);
+    let ack_endpoint = ack_url(&base);
+    drain_ack_spool(
+        app,
+        &client,
+        &ack_endpoint,
+        token,
+        business_id,
+        &device_id,
+    )
+    .await;
+
     let claim_body = ClaimBatchBody {
         business_id,
         device_id: &device_id,
@@ -1927,6 +2026,7 @@ async fn poll_once(app: &AppHandle) -> PollOutcome {
     }
 
     post_ack_batch(
+        app,
         &client,
         &ack_endpoint,
         token,

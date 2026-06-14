@@ -14,6 +14,7 @@ mod connection_diagnostics;
 mod watch_policy_sync;
 mod ccc_import_settings;
 mod ccc_package_sync;
+mod ack_spool;
 mod device_id;
 mod device_health;
 mod api_contracts;
