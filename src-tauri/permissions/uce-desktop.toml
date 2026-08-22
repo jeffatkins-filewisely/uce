@@ -7,5 +7,7 @@ commands.allow = [
   "uce_os_info",
   "uce_ccc_capture_test",
   "uce_ccc_run_autodiscovery",
+  "uce_source_run_autodiscovery",
+  "uce_harvest_local_ro_docs",
   "uce_ccc_last_files_seen",
 ]

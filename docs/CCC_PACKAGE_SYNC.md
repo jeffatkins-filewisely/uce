@@ -65,7 +65,9 @@ Existing `uce-ingest` heartbeat (`action: "heartbeat"` in `src/main.js`) adds:
 | `target_path_hint` | `RO81587_Smith_BMW` (folder under CCC Import root) |
 | `source_table` / `source_id` | intake link row — pass through on ack |
 
-**Lease:** 2 minutes server-side; crash mid-batch re-queues unacked items.
+**Per-device copy (2026-08-22):** each UCE PC claims files it has not acked in `ccc_import_device_acks`. A shop-wide `ready` row means “at least one machine wrote it”; other PCs still download until they ack. New machines receive **newest portals first**. Settings → Desktop Agent shows per-PC catch-up %. Connection Doctor → **Upload local RO folders** pushes leftover local docs *up* (never from `CCC Import`). The old primary-lease idle (`secondary_device: true`) is gone.
+
+**Lease:** 2 minutes **per device**; crash mid-batch re-queues that device only.
 
 Rust: `src-tauri/src/ccc_package_sync.rs` — `SUPABASE_URL` is derived from `backend_url` by truncating at `/functions/v1`.
 

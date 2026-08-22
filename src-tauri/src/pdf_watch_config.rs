@@ -22,7 +22,8 @@
 //! `ProgramData` paths, classic `C:\\CCC\\WORKFILES`, `C:\\CCC`, **first-level subfolders** under
 //! `C:\\CCC` and under `%ProgramData%\\CCCInformation Services` (skipping obvious non-export dirs),
 //! `%LOCALAPPDATA%\\Temp\\CCC` (**always** listed so UCE creates it and watches even before CCC runs),
-//! plus `extra_dirs` from config.
+//! Windows scan destinations (`Pictures\\Scanned Documents`, Epson/Brother vendor folders,
+//! `C:\\FileWisely\\Scans`), plus `extra_dirs` from config.
 //!
 //! **Machine seed:** `C:\\FileWisely\\App\\uce-pdf-watch.seed.json` (optional JSON with `extra_dirs` /
 //! `office_intercept_extra_dirs`) is **unioned** with per-user `uce-pdf-watch.json` so elevated installers
@@ -49,7 +50,7 @@ fn default_office_auto_print_silent() -> bool {
 }
 
 fn default_office_print_prompt_fallback() -> bool {
-    true
+    false
 }
 
 fn default_general_document_capture_enabled() -> bool {
@@ -110,6 +111,9 @@ pub struct PdfWatchConfig {
     /// Machine-learned CCC export/temp folders from [`crate::services::ccc_autodiscovery`].
     #[serde(default)]
     pub auto_discovered_ccc_dirs: Vec<String>,
+    /// Machine-learned print/scan destination folders from [`crate::services::source_autodiscovery`].
+    #[serde(default)]
+    pub auto_discovered_source_dirs: Vec<String>,
 }
 
 impl Default for PdfWatchConfig {
@@ -129,6 +133,7 @@ impl Default for PdfWatchConfig {
             general_document_capture_enabled: default_general_document_capture_enabled(),
             general_min_file_bytes: None,
             auto_discovered_ccc_dirs: Vec::new(),
+            auto_discovered_source_dirs: Vec::new(),
         }
     }
 }
@@ -141,6 +146,18 @@ fn append_auto_discovered_ccc_watch_roots(
         let p = PathBuf::from(s.trim());
         if !p.as_os_str().is_empty() {
             out.push((p, "ccc_autodiscovered"));
+        }
+    }
+}
+
+fn append_auto_discovered_source_watch_roots(
+    cfg: &PdfWatchConfig,
+    out: &mut Vec<(PathBuf, &'static str)>,
+) {
+    for s in &cfg.auto_discovered_source_dirs {
+        let p = PathBuf::from(s.trim());
+        if !p.as_os_str().is_empty() {
+            out.push((p, "source_autodiscovered"));
         }
     }
 }
@@ -288,8 +305,17 @@ fn infer_office_root_label(dir: &Path) -> &'static str {
     if s.contains("programdata") && s.contains("ccc") {
         return "ccc_programdata";
     }
+    if s.contains("filewisely") && s.contains("scans") {
+        return "scan_filewisely";
+    }
     if s.contains("filewisely") {
         return "filewisely_tree";
+    }
+    if s.contains("scanned documents") || s.contains("\\fax") || s.contains("/fax") {
+        return "scan_documents";
+    }
+    if s.contains("epson") || s.contains("brother") || s.contains("canon") || s.contains("twain") {
+        return "scan_vendor";
     }
     if s.contains("ccc") {
         return "ccc_path";
@@ -325,6 +351,7 @@ pub fn office_intercept_watch_roots(app: &tauri::AppHandle) -> Vec<(PathBuf, &'s
     if print_config::ccc_temp_watch_only() {
         let cfg = load_pdf_watch_config(app);
         append_auto_discovered_ccc_watch_roots(&cfg, &mut out);
+        append_auto_discovered_source_watch_roots(&cfg, &mut out);
         return dedupe_office_watch_roots(out);
     }
 
@@ -366,6 +393,14 @@ pub fn office_intercept_watch_roots(app: &tauri::AppHandle) -> Vec<(PathBuf, &'s
     }
 
     append_auto_discovered_ccc_watch_roots(&cfg, &mut out);
+    append_auto_discovered_source_watch_roots(&cfg, &mut out);
+
+    for (dir, rule) in scan_destination_roots_with_rules() {
+        if paths_canon_equal(&dir, &primary) {
+            continue;
+        }
+        out.push((dir, rule));
+    }
 
     dedupe_office_watch_roots(out)
 }
@@ -396,6 +431,10 @@ pub fn ccc_core_candidate_dirs(app: &tauri::AppHandle) -> Vec<PathBuf> {
     #[cfg(windows)]
     {
         push_if_exists(&mut dirs, PathBuf::from(r"C:\FileWisely\Incoming"));
+        dirs.push(PathBuf::from(print_config::FW_SCANS_DIR));
+        for (dir, _) in scan_destination_roots_with_rules() {
+            dirs.push(dir);
+        }
     }
 
     for s in cfg.extra_dirs.iter().chain(seed.extra_dirs.iter()) {
@@ -449,6 +488,56 @@ pub fn general_user_document_dirs() -> Vec<PathBuf> {
 
 pub fn is_general_capture_rule(rule: &str) -> bool {
     rule.starts_with("general_")
+}
+
+/// Folders that are expected to receive WIA / vendor scanner output (images + PDFs).
+pub fn is_scan_source_rule(rule: &str) -> bool {
+    matches!(
+        rule,
+        "scan_documents"
+            | "scan_pictures"
+            | "scan_vendor"
+            | "scan_filewisely"
+            | "source_autodiscovered"
+    )
+}
+
+/// Default Windows / vendor scan destinations. Missing folders are skipped except `C:\FileWisely\Scans`.
+pub fn scan_destination_roots_with_rules() -> Vec<(PathBuf, &'static str)> {
+    let mut out = Vec::new();
+    out.push((
+        PathBuf::from(print_config::FW_SCANS_DIR),
+        "scan_filewisely",
+    ));
+
+    let Ok(user_profile) = std::env::var("USERPROFILE") else {
+        return out;
+    };
+    let base = PathBuf::from(&user_profile);
+    let pictures = base.join("Pictures");
+    let documents = base.join("Documents");
+    let onedrive = base.join("OneDrive");
+
+    let pairs: [(&Path, &str, &'static str); 14] = [
+        (&pictures, "Scanned Documents", "scan_pictures"),
+        (&documents, "Scanned Documents", "scan_documents"),
+        (&documents, "Fax", "scan_documents"),
+        (&documents, "EPSON Scan", "scan_vendor"),
+        (&documents, "Epson Scan", "scan_vendor"),
+        (&documents, "Epson", "scan_vendor"),
+        (&documents, "Brother", "scan_vendor"),
+        (&pictures, "EPSON Scan", "scan_vendor"),
+        (&pictures, "Epson", "scan_vendor"),
+        (&pictures, "Brother", "scan_vendor"),
+        (&onedrive, "Pictures\\Scanned Documents", "scan_pictures"),
+        (&onedrive, "Documents\\Scanned Documents", "scan_documents"),
+        (&onedrive, "Documents\\EPSON Scan", "scan_vendor"),
+        (&onedrive, "Documents\\Brother", "scan_vendor"),
+    ];
+    for (parent, child, rule) in pairs {
+        push_general_pair(&mut out, parent.join(child), rule);
+    }
+    out
 }
 
 /// Minimum size for PDFs and Office files under `general_*` roots.
@@ -510,6 +599,16 @@ pub fn candidate_pdf_dirs(app: &tauri::AppHandle) -> Vec<PathBuf> {
 
     if cfg.general_document_capture_enabled {
         dirs.extend(general_user_document_dirs());
+    }
+
+    for (dir, _) in scan_destination_roots_with_rules() {
+        dirs.push(dir);
+    }
+    for s in &cfg.auto_discovered_source_dirs {
+        let p = PathBuf::from(s.trim());
+        if !p.as_os_str().is_empty() {
+            dirs.push(p);
+        }
     }
 
     dedupe_dirs(dirs)

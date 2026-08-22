@@ -94,6 +94,21 @@ pub fn vendor_workflow_rules() -> Vec<Rule> {
             cooldown_secs: 8,
             workflow_kind: "ops_trax".to_string(),
         },
+        Rule {
+            id: "wia_scan_dialog".to_string(),
+            app_keywords: vec![],
+            title_keywords: vec![
+                "scan using".to_string(),
+                "acquiring data".to_string(),
+                "epson ds".to_string(),
+                "epson scan".to_string(),
+                "camera/scanner".to_string(),
+            ],
+            title_keywords_all: vec![],
+            priority: 6,
+            cooldown_secs: 4,
+            workflow_kind: "scan".to_string(),
+        },
     ]
 }
 
@@ -246,6 +261,9 @@ pub fn workflow_kind_from_rule_id(rule_id: &str) -> String {
     if id.starts_with("ops_trax_") || id.starts_with("opstrax_") {
         return "ops_trax".to_string();
     }
+    if id.starts_with("wia_") || id.starts_with("scan_") {
+        return "scan".to_string();
+    }
     if id.starts_with("trained_") {
         let rest = id.strip_prefix("trained_").unwrap_or("");
         if let Some(end) = rest.rfind('_') {
@@ -265,10 +283,9 @@ pub fn workflow_kind_from_rule_id(rule_id: &str) -> String {
 }
 
 pub fn preferred_capture_mode_for_rule(rule_id: &str) -> String {
-    if workflow_kind_from_rule_id(rule_id).as_str() == "ccc" {
-        "pdf".to_string()
-    } else {
-        "screenshot".to_string()
+    match workflow_kind_from_rule_id(rule_id).as_str() {
+        "ccc" | "scan" => "pdf".to_string(),
+        _ => "screenshot".to_string(),
     }
 }
 

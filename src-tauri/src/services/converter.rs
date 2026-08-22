@@ -198,6 +198,18 @@ pub fn resolve_soffice_path(config_override: Option<&str>) -> Option<PathBuf> {
     None
 }
 
+pub fn is_convertible_image_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| {
+            matches!(
+                e.to_lowercase().as_str(),
+                "jpg" | "jpeg" | "png" | "tif" | "tiff" | "bmp"
+            )
+        })
+        .unwrap_or(false)
+}
+
 pub fn is_convertible_office_path(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
@@ -738,6 +750,115 @@ pub fn ingest_office_incoming_to_pdf(
     };
     foreground_telemetry::log_foreground("office_after_ingest_success");
     Ok(pdf)
+}
+
+/// Copy a scanner image into `.uce_staging` (leave the original in place) and convert to PDF via LibreOffice.
+pub fn ingest_image_incoming_to_pdf(
+    soffice: &Path,
+    incoming_path: &Path,
+    out_dir: &Path,
+    pdf_stem: &str,
+) -> Result<PathBuf, String> {
+    if !is_convertible_image_path(incoming_path) {
+        return Err("Not a convertible scan image".into());
+    }
+    let key = incoming_pipeline_key(incoming_path);
+    let Some(_pipeline) = try_acquire_incoming_pipeline(key) else {
+        return Err(DUPLICATE_OFFICE_PIPELINE_SKIPPED.to_string());
+    };
+    if !incoming_path.is_file() {
+        return Err("Scan image does not exist".into());
+    }
+    fs::create_dir_all(out_dir).map_err(|e| format!("create outdir: {e}"))?;
+    let staging = if is_direct_child_of_fw_incoming(incoming_path) {
+        print_config::filewisely_uce_staging_dir()
+    } else {
+        out_dir.join(".uce_staging")
+    };
+    fs::create_dir_all(&staging).map_err(|e| format!("create image staging: {e}"))?;
+    let ext = incoming_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("jpg");
+    let staged = staging.join(format!("{pdf_stem}.{ext}"));
+    let _ = fs::remove_file(&staged);
+    fs::copy(incoming_path, &staged).map_err(|e| format!("copy scan image to staging: {e}"))?;
+
+    let _guard = OFFICE_TO_PDF_LOCK
+        .lock()
+        .map_err(|_| "Office→PDF lock poisoned".to_string())?;
+    convert_staged_image_to_pdf(soffice, &staged, out_dir, pdf_stem)
+}
+
+fn convert_staged_image_to_pdf(
+    soffice: &Path,
+    staged_path: &Path,
+    out_dir: &Path,
+    pdf_stem: &str,
+) -> Result<PathBuf, String> {
+    if !path_is_under_uce_staging(staged_path) {
+        return Err("Internal error: image convert requires a path under .uce_staging".into());
+    }
+    if !staged_path.is_file() {
+        return Err("Staged scan image does not exist".into());
+    }
+    let ext = staged_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("jpg");
+    let out_str = out_dir
+        .to_str()
+        .ok_or_else(|| "Invalid output dir".to_string())?;
+    let work_stem = format!("{pdf_stem}_uceimg");
+    let work_path = out_dir.join(format!("{work_stem}.{ext}"));
+    let _ = fs::remove_file(&work_path);
+    fs::copy(staged_path, &work_path).map_err(|e| format!("Copy scan image for LibreOffice: {e}"))?;
+    let work_input_str = work_path
+        .to_str()
+        .ok_or_else(|| "Invalid temp path".to_string())?;
+    let pdf_from_lo = out_dir.join(format!("{work_stem}.pdf"));
+    let pdf_final = out_dir.join(format!("{pdf_stem}.pdf"));
+
+    let mut cmd = Command::new(soffice);
+    cmd.args([
+        "--headless",
+        "--invisible",
+        "--nologo",
+        "--nofirststartwizard",
+        "--convert-to",
+        "pdf",
+        work_input_str,
+        "--outdir",
+        out_str,
+    ])
+    .env("SAL_USE_VCLPLUGIN", "svp");
+
+    let output = super::process_launch::run_output(
+        "converter",
+        "libreoffice_image_to_pdf",
+        cmd,
+        super::process_launch::TIMEOUT_LIBREOFFICE,
+    )
+    .map_err(|e| format!("Failed to run LibreOffice: {e}. Is it installed?"))?;
+
+    if output.status.success() && pdf_from_lo.is_file() {
+        let _ = fs::remove_file(&pdf_final);
+        fs::rename(&pdf_from_lo, &pdf_final).map_err(|e| format!("rename PDF: {e}"))?;
+        let _ = fs::remove_file(&work_path);
+        eprintln!(
+            "[UCE] SCAN_IMAGE_CONVERT_OK staged={} pdf={}",
+            staged_path.display(),
+            pdf_final.display()
+        );
+        return Ok(pdf_final);
+    }
+    let _ = fs::remove_file(&work_path);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(format!(
+        "LibreOffice image→PDF failed exit={:?} stderr={}",
+        output.status.code(),
+        stderr.chars().take(240).collect::<String>()
+    ))
 }
 
 fn maybe_retain_staged_debug_copy(staged_path: &Path, out_dir: &Path) {

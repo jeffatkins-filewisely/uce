@@ -73,6 +73,18 @@ if ($env:LOCALAPPDATA) {
 }
 
 Add-IfExists -List $dirs -Seen $seen -LiteralPath "C:\FileWisely\Incoming"
+Add-IfExists -List $dirs -Seen $seen -LiteralPath "C:\FileWisely\Scans"
+
+if ($env:USERPROFILE) {
+    $b = $env:USERPROFILE
+    Add-IfExists -List $dirs -Seen $seen -LiteralPath (Join-Path $b "Pictures\Scanned Documents")
+    Add-IfExists -List $dirs -Seen $seen -LiteralPath (Join-Path $b "Documents\Scanned Documents")
+    Add-IfExists -List $dirs -Seen $seen -LiteralPath (Join-Path $b "Documents\Fax")
+    Add-IfExists -List $dirs -Seen $seen -LiteralPath (Join-Path $b "Documents\EPSON Scan")
+    Add-IfExists -List $dirs -Seen $seen -LiteralPath (Join-Path $b "Documents\Brother")
+    Add-IfExists -List $dirs -Seen $seen -LiteralPath (Join-Path $b "Pictures\EPSON Scan")
+    Add-IfExists -List $dirs -Seen $seen -LiteralPath (Join-Path $b "Pictures\Brother")
+}
 
 $parent = Split-Path -Parent $OutPath
 if (-not (Test-Path -LiteralPath $parent)) {

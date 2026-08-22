@@ -12,6 +12,9 @@ pub const FILEWISELY_ROOT: &str = r"C:\FileWisely";
 /// Ingestion folder watched by UCE (Rust watcher + JS poll). Create at install time.
 pub const FW_OUTPUT_DIR: &str = r"C:\FileWisely\Incoming";
 
+/// Dedicated drop folder for scanner / WIA harvest copies (created at watcher start).
+pub const FW_SCANS_DIR: &str = r"C:\FileWisely\Scans";
+
 /// Machine-local seed written by `install.ps1` / `seed-uce-pdf-watch.ps1` (merged at runtime with per-user `uce-pdf-watch.json`).
 pub fn filewisely_pdf_watch_seed_path() -> PathBuf {
     PathBuf::from(FILEWISELY_ROOT)

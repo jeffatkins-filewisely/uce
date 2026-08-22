@@ -10,7 +10,8 @@ This document describes what **UCE (this repo)** does through HTTP POST, and wha
 
 | Step | Location | Notes |
 |------|-----------|--------|
-| Debounced file events | `src-tauri/src/services/print_watcher.rs` | One watcher thread per configured root |
+| Debounced file events | `src-tauri/src/services/print_watcher.rs` | One watcher thread per configured root. Scan-tagged roots also accept jpg/tif/png/bmp → PDF. |
+| Print/scan folder learning | `src-tauri/src/services/source_autodiscovery.rs` | Seeds Windows scan dirs + learns new folders after WIA / print-to-PDF dialogs; persists `auto_discovered_source_dirs`. |
 | Path handling | `handle_path` | Extension must be PDF or convertible Office |
 | **Folder rule** | `pdf_watch_config::resolve_office_source_rule` | Longest-prefix match on watch roots (e.g. `general_downloads`, `ccc_temp`, `filewisely_incoming`) |
 | General-folder filters | `pdf_watch_config.rs` | Ignores patterns (e.g. broad `%TEMP%` except `Temp\CCC`), min bytes for `general_*` |
@@ -103,7 +104,7 @@ Implement or extend **uce-ingest** (or your capture Edge Function) as follows.
 
 ## Part D — Optional future UCE enhancements (not required for backend)
 
-- Add more default watch roots (Outlook cache, scanner dirs) **behind config flags** and strict filters — see `pdf_watch_config.rs` and `uce-pdf-watch.json`.
+- Default scan destinations (`Pictures\Scanned Documents`, Epson/Brother vendor folders, `C:\FileWisely\Scans`) are watched. Source autodiscovery (`source_autodiscovery.rs`) learns additional print/scan folders after WIA or print-to-PDF dialogs and persists them to `auto_discovered_source_dirs`. Scan images (jpg/tif/png/bmp) from those roots convert to PDF via LibreOffice. `\\.\Usbscan0` is a device port and cannot be watched as a folder.
 - Optionally send Rust **`matched_rule`** (folder) as a separate field in the JSON body if product wants both without inference — **would require a small UCE change + backend field**.
 
 ---

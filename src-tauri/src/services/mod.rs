@@ -22,5 +22,7 @@ pub mod printer_alert_policy;
 pub mod printer_check;
 pub mod printer_bullzip_ini;
 pub mod print_watcher;
+pub mod source_autodiscovery;
+pub mod local_ro_harvest;
 pub mod processed_retention;
 pub mod startup_shortcut;

@@ -39,6 +39,9 @@ fn extension_kind(path: &Path) -> Option<&'static str> {
     if converter::is_convertible_office_path(path) {
         return Some("office");
     }
+    if converter::is_convertible_image_path(path) {
+        return Some("image");
+    }
     None
 }
 
@@ -227,6 +230,57 @@ fn log_general_pdf_captured_if_needed(matched_rule: &str, pdf_path: &str) {
     }
 }
 
+fn process_scan_image_incoming(app: tauri::AppHandle, path: PathBuf, matched_rule: &'static str) {
+    let original_display = path.display().to_string();
+    eprintln!(
+        "[UCE] SCAN_IMAGE_DETECTED path={} matched_rule={}",
+        original_display, matched_rule
+    );
+    if !wait_for_pdf_file_stable(&path) {
+        eprintln!(
+            "UCE_FILE_REJECTED path={} reason=scan_image_not_stable",
+            original_display
+        );
+        return;
+    }
+    let cfg = pdf_watch_config::load_pdf_watch_config(&app);
+    let Some(soffice) = converter::resolve_soffice_path(cfg.libreoffice_path.as_deref()) else {
+        eprintln!(
+            "[UCE] SCAN_IMAGE_PIPELINE_RESULT path={} result=skipped reason=libreoffice_not_found",
+            original_display
+        );
+        return;
+    };
+    let (out_dir, stem) = converter::office_output_dir_and_pdf_stem(&path);
+    match converter::ingest_image_incoming_to_pdf(&soffice, &path, &out_dir, stem.as_str()) {
+        Ok(pdf_out) => {
+            let path_str = pdf_out.to_string_lossy().to_string();
+            eprintln!(
+                "[UCE] SCAN_IMAGE_ENQUEUED_AS_PDF src={} pdf={}",
+                original_display, path_str
+            );
+            incoming_emit::emit_uce_incoming_pdf_detailed(
+                &app,
+                path_str,
+                "scan_image_convert",
+                Some(matched_rule),
+            );
+        }
+        Err(e) if e == converter::DUPLICATE_OFFICE_PIPELINE_SKIPPED => {
+            eprintln!(
+                "[UCE] SCAN_IMAGE_PIPELINE_RESULT path={} result=skipped reason=duplicate_pipeline",
+                original_display
+            );
+        }
+        Err(e) => {
+            eprintln!(
+                "[UCE] SCAN_IMAGE_PIPELINE_RESULT path={} result=failed err={e}",
+                original_display
+            );
+        }
+    }
+}
+
 fn handle_path(app: &tauri::AppHandle, path: std::path::PathBuf) {
     let path_disp = path.to_string_lossy().into_owned();
     eprintln!(
@@ -264,10 +318,10 @@ fn handle_path(app: &tauri::AppHandle, path: std::path::PathBuf) {
 
     let Some(kind) = extension_kind(&path) else {
         eprintln!(
-            "UCE_FILE_REJECTED path={} reason=no_pdf_office_extension",
+            "UCE_FILE_REJECTED path={} reason=no_pdf_office_image_extension",
             path.display()
         );
-        pipeline_stage_diag::record_rejected(&path_disp, "no_pdf_office_extension");
+        pipeline_stage_diag::record_rejected(&path_disp, "no_pdf_office_image_extension");
         return;
     };
 
@@ -380,6 +434,15 @@ fn handle_path(app: &tauri::AppHandle, path: std::path::PathBuf) {
             );
         }
         "office" => {
+            if is_general {
+                eprintln!(
+                    "UCE_FILE_REJECTED path={} reason=office_skipped_general_folder matched_rule={}",
+                    path.display(),
+                    matched_rule
+                );
+                pipeline_stage_diag::record_rejected(&path_disp, "office_skipped_general_folder");
+                return;
+            }
             let office_disp = path.to_string_lossy().into_owned();
             if !path.is_file() {
                 eprintln!(
@@ -435,8 +498,40 @@ fn handle_path(app: &tauri::AppHandle, path: std::path::PathBuf) {
                 process_filewisely_office_incoming(app, path, rule);
             });
         }
+        "image" => {
+            if !pdf_watch_config::is_scan_source_rule(matched_rule)
+                && matched_rule != "ccc_temp"
+                && matched_rule != "ccc_autodiscovered"
+            {
+                eprintln!(
+                    "UCE_FILE_REJECTED path={} reason=image_not_from_scan_root matched_rule={}",
+                    path.display(),
+                    matched_rule
+                );
+                pipeline_stage_diag::record_rejected(&path_disp, "image_not_from_scan_root");
+                return;
+            }
+            if !path.is_file() {
+                pipeline_stage_diag::record_rejected(&path_disp, "not_a_file_image_branch");
+                return;
+            }
+            pipeline_stage_diag::record_accepted(
+                &path_disp,
+                Some(format!("kind=image matched_rule={matched_rule}")),
+            );
+            let app = app.clone();
+            let rule = matched_rule;
+            thread::spawn(move || {
+                process_scan_image_incoming(app, path, rule);
+            });
+        }
         _ => {}
     }
+}
+
+/// Public entry so source harvest can ingest a just-discovered file immediately.
+pub fn ingest_path_now(app: &tauri::AppHandle, path: PathBuf) {
+    handle_path(app, path);
 }
 
 /// Spawn a background thread that debounce-watches Office/PDF roots.

@@ -468,6 +468,7 @@ fn capture_pipeline_snapshot(app: &AppHandle) -> serde_json::Value {
         "ccc_temp_watch_only_env": print_config::ccc_temp_watch_only(),
         "printer_alert": printer_alert,
         "auto_discovered_ccc_dirs": pw.auto_discovered_ccc_dirs,
+        "auto_discovered_source_dirs": pw.auto_discovered_source_dirs,
         "general_document_capture_enabled": pw.general_document_capture_enabled,
         "general_min_file_bytes": pw.general_min_file_bytes,
         "min_pdf_bytes_config": pw.min_pdf_bytes,
@@ -515,6 +516,18 @@ fn capture_pipeline_snapshot(app: &AppHandle) -> serde_json::Value {
         serde_json::Value::Object(extra),
     ) = (&mut cap, ccc_autodiscovery::diagnostics_snapshot())
     {
+        for (k, v) in extra {
+            m.insert(k, v);
+        }
+    }
+
+    if let (
+        serde_json::Value::Object(ref mut m),
+        serde_json::Value::Object(extra),
+    ) = (
+        &mut cap,
+        crate::services::source_autodiscovery::diagnostics_snapshot(),
+    ) {
         for (k, v) in extra {
             m.insert(k, v);
         }
@@ -811,6 +824,46 @@ fn format_capture_pipeline_plain(cp: &serde_json::Value) -> String {
             .and_then(|x| x.as_f64())
             .unwrap_or(0.0)
     ));
+    out.push_str("auto_discovered_source_dirs (print/scan folders):\n");
+    if let Some(arr) = cp
+        .get("auto_discovered_source_dirs")
+        .and_then(|x| x.as_array())
+    {
+        if arr.is_empty() {
+            out.push_str("  (none)\n");
+        }
+        for x in arr {
+            if let Some(s) = x.as_str() {
+                out.push_str(&format!("  - {}\n", s));
+            }
+        }
+    } else {
+        out.push_str("  (missing)\n");
+    }
+    if let Some(ms) = cp
+        .get("source_autodiscovery_last_run_unix_ms")
+        .and_then(|x| x.as_i64())
+    {
+        out.push_str(&format!("source_autodiscovery_last_run_unix_ms: {}\n", ms));
+    } else {
+        out.push_str("source_autodiscovery_last_run_unix_ms: (never)\n");
+    }
+    out.push_str("source_autodiscovery_devices:\n");
+    if let Some(arr) = cp
+        .get("source_autodiscovery_devices")
+        .and_then(|x| x.as_array())
+    {
+        if arr.is_empty() {
+            out.push_str("  (none)\n");
+        }
+        for x in arr.iter().take(16) {
+            if let Some(s) = x.as_str() {
+                out.push_str(&format!("  - {}\n", s));
+            }
+        }
+    } else {
+        out.push_str("  (none)\n");
+    }
     out.push_str("ccc_autodiscovery_candidates (sample):\n");
     if let Some(arr) = cp
         .get("ccc_autodiscovery_candidates")

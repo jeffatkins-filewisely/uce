@@ -7527,11 +7527,17 @@ async function prepareWindowForPrinterRepairUi() {
   }
 }
 
-async function selfHealPrinter(fromStartup = false) {
+async function selfHealPrinter(fromStartup = false, allowUac = false) {
   try {
     await refreshPrinterHealthFromBackend();
     await refreshPrinterPolicyCache();
     if (healthPrinterExact) {
+      await updateUceHealthStrip();
+      return;
+    }
+    // Shop PCs (Joseph): never auto-elevate. Missing printer stays a
+    // health-strip warning unless Connection Doctor explicitly repairs.
+    if (!allowUac) {
       await updateUceHealthStrip();
       return;
     }
@@ -7916,6 +7922,10 @@ window.__uceCccCaptureTest = async (timeoutSecs = 60) =>
   invoke("uce_ccc_capture_test", { timeoutSecs });
 /** Scan typical CCC locations; merges into uce-pdf-watch.json `auto_discovered_ccc_dirs`. */
 window.__uceCccRunAutodiscovery = () => invoke("uce_ccc_run_autodiscovery");
+/** Discover print/scan destination folders; merges into `auto_discovered_source_dirs`. */
+window.__uceSourceRunAutodiscovery = () => invoke("uce_source_run_autodiscovery");
+/** One-time pull of local RO folders (not CCC Import) up to FileWisely. */
+window.__uceHarvestLocalRoDocs = () => invoke("uce_harvest_local_ro_docs");
 window.__uceCccLastFilesSeen = () => invoke("uce_ccc_last_files_seen");
 window.__uceDetectContext = () => {
   const raw = detectUceContext(lastPolledContext, getUceRecognitionSignals());
@@ -7959,7 +7969,7 @@ window.__uceIsCccWorkflowWindow = isCccWorkflowWindow;
 window.__uceResolveRoForAwareness = resolveRoForAwareness;
 window.__uceHealthStrip = updateUceHealthStrip;
 window.__uceRefreshPrinterPolicy = refreshPrinterPolicyCache;
-window.__uceSelfHealPrinter = selfHealPrinter;
+window.__uceSelfHealPrinter = (force = false) => selfHealPrinter(false, !!force);
 window.__uceGetEventLog = getUceEventLog;
 window.__uceLogEvent = logEvent;
 /** Installed app version from `tauri.conf.json` / bundle (compare to GitHub release). */

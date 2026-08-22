@@ -138,7 +138,7 @@ async function renderStatus() {
   root.innerHTML = `
 <div class="wrap">
   <h1>Connection &amp; capture status</h1>
-  <p class="hint">JSON below includes full <strong>capture_pipeline</strong>. <strong>Find CCC Folders</strong> scans typical CCC locations for recent PDFs/docs and saves paths to <code>auto_discovered_ccc_dirs</code> (watchers refresh ~60s). <strong>Copy diagnostic report</strong> includes capture health. <strong>CCC Capture Test</strong> waits for a <em>new</em> PDF (30s). If the test fails, auto-discovery runs once automatically. Global popup mute: <code>uce_suppress_all_popups</code> / env <code>UCE_SUPPRESS_ALL_POPUPS</code>. Printer-only: <code>uce_suppress_printer_severe_modal</code>.</p>
+  <p class="hint">JSON below includes full <strong>capture_pipeline</strong>. <strong>Find CCC Folders</strong> scans typical CCC locations for recent PDFs/docs and saves paths to <code>auto_discovered_ccc_dirs</code> (watchers refresh ~60s). <strong>Find scan &amp; print folders</strong> adds Windows scan destinations (Epson/Brother/Scanned Documents) plus folders learned after a WIA or print-to-PDF dialog. <strong>Copy diagnostic report</strong> includes capture health. <strong>CCC Capture Test</strong> waits for a <em>new</em> PDF (30s). If the test fails, auto-discovery runs once automatically. Global popup mute: <code>uce_suppress_all_popups</code> / env <code>UCE_SUPPRESS_ALL_POPUPS</code>. Printer-only: <code>uce_suppress_printer_severe_modal</code>.</p>
   <pre class="mono">${esc(JSON.stringify(j, null, 2))}</pre>
   <p class="mini">Last heartbeat (UTC): ${esc(lastHuman)}</p>
   <div class="row">
@@ -155,6 +155,14 @@ async function renderStatus() {
     <button type="button" id="cdCccDiscoverCopy" class="secondary" hidden>Copy discovery result</button>
   </div>
   <pre id="cdCccDiscoverOut" class="mono out" hidden></pre>
+  <div class="row">
+    <button type="button" id="cdRepairPrinter" class="secondary">Install / repair printer (UAC)</button>
+    <button type="button" id="cdHarvestLocal" class="secondary">Upload local RO folders</button>
+    <button type="button" id="cdSourceDiscover" class="secondary">Find scan &amp; print folders</button>
+    <button type="button" id="cdSourceDiscoverCopy" class="secondary" hidden>Copy scan/print result</button>
+  </div>
+  <pre id="cdSourceDiscoverOut" class="mono out" hidden></pre>
+  <pre id="cdHarvestLocalOut" class="mono out" hidden></pre>
 </div>`;
 
   document.getElementById("cdRefresh").addEventListener("click", () => {
@@ -256,6 +264,88 @@ async function renderStatus() {
         JSON.stringify(lastDiscoverResult, null, 2)
       );
       guardedAlert("Discovery result copied.");
+    } catch (e) {
+      guardedAlert(String(e));
+    }
+  });
+
+  const repairBtn = document.getElementById("cdRepairPrinter");
+  if (repairBtn) {
+    repairBtn.addEventListener("click", async () => {
+      repairBtn.disabled = true;
+      try {
+        const rep = await invoke("repair_printer");
+        guardedAlert(
+          rep?.ok
+            ? (rep.message || "FileWisely Printer installed.")
+            : (rep?.message || "Printer repair failed. Windows may have asked for permission.")
+        );
+      } catch (e) {
+        guardedAlert(String(e));
+      } finally {
+        repairBtn.disabled = false;
+      }
+    });
+  }
+
+  const harvestBtn = document.getElementById("cdHarvestLocal");
+  const harvestOut = document.getElementById("cdHarvestLocalOut");
+  if (harvestBtn && harvestOut) {
+    harvestBtn.addEventListener("click", async () => {
+      harvestBtn.disabled = true;
+      harvestOut.hidden = false;
+      harvestOut.textContent =
+        "Scanning local CCC / Scans / RO-named Desktop folders (skips CCC Import mirror)…";
+      harvestOut.className = "mono out";
+      try {
+        const result = await invoke("uce_harvest_local_ro_docs");
+        harvestOut.textContent = JSON.stringify(result, null, 2);
+        harvestOut.className =
+          result?.ok === false ? "mono out bad" : "mono out ok";
+      } catch (e) {
+        harvestOut.textContent = String(e);
+        harvestOut.className = "mono out bad";
+      } finally {
+        harvestBtn.disabled = false;
+      }
+    });
+  }
+
+  const sourceBtn = document.getElementById("cdSourceDiscover");
+  const sourceOut = document.getElementById("cdSourceDiscoverOut");
+  const sourceCopy = document.getElementById("cdSourceDiscoverCopy");
+  let lastSourceResult = null;
+
+  sourceBtn.addEventListener("click", async () => {
+    sourceBtn.disabled = true;
+    sourceOut.hidden = false;
+    sourceOut.textContent =
+      "Looking for Windows scan destinations, printer/scanner devices, and recent scan/print files…";
+    sourceOut.className = "mono out";
+    sourceCopy.hidden = true;
+    lastSourceResult = null;
+    try {
+      const disc = await invoke("uce_source_run_autodiscovery");
+      lastSourceResult = disc;
+      sourceOut.textContent = JSON.stringify(disc, null, 2);
+      sourceOut.className =
+        disc?.ok === false ? "mono out bad" : "mono out ok";
+      sourceCopy.hidden = false;
+    } catch (e) {
+      sourceOut.textContent = String(e);
+      sourceOut.className = "mono out bad";
+    } finally {
+      sourceBtn.disabled = false;
+    }
+  });
+
+  sourceCopy.addEventListener("click", async () => {
+    if (lastSourceResult == null) return;
+    try {
+      await navigator.clipboard.writeText(
+        JSON.stringify(lastSourceResult, null, 2)
+      );
+      guardedAlert("Scan/print discovery result copied.");
     } catch (e) {
       guardedAlert(String(e));
     }

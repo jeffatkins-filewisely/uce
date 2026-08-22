@@ -1331,6 +1331,20 @@ async fn process_mirror(
         return;
     };
     let dest = destination_path(root, item);
+    if dest.is_file() {
+        if let Ok(meta) = std::fs::metadata(&dest) {
+            if meta.len() > 0 {
+                let path = dest.display().to_string();
+                eprintln!(
+                    "CCC_PACKAGE_ALREADY_ON_DISK queue_id={} path={}",
+                    item.queue_id, path
+                );
+                queue_ack(pending, item, "ok", None, Some(path));
+                note_write_ok();
+                return;
+            }
+        }
+    }
     match download_to_path(client, url, &dest).await {
         Ok(()) => {
             let path = dest.display().to_string();

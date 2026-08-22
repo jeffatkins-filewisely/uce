@@ -1867,6 +1867,20 @@ fn uce_ccc_run_autodiscovery(
 }
 
 #[tauri::command]
+fn uce_source_run_autodiscovery(
+    app: AppHandle,
+) -> Result<services::source_autodiscovery::SourceAutodiscoverySummary, String> {
+    Ok(services::source_autodiscovery::run_for_app(&app, "manual"))
+}
+
+#[tauri::command]
+fn uce_harvest_local_ro_docs(
+    app: AppHandle,
+) -> Result<services::local_ro_harvest::LocalRoHarvestSummary, String> {
+    Ok(services::local_ro_harvest::run_for_app(&app))
+}
+
+#[tauri::command]
 fn uce_ccc_last_files_seen() -> Vec<String> {
     services::ccc_capture_diag::last_ccc_files_seen()
 }
@@ -2359,12 +2373,14 @@ pub fn run() {
             {
                 let h = app.handle().clone();
                 let _ = services::ccc_autodiscovery::run_for_app(&h, "startup");
+                let _ = services::source_autodiscovery::run_for_app(&h, "startup");
                 eprintln!("UCE_PRINT_WATCHER_STARTING");
                 if let Err(e) = services::print_watcher::start_print_watcher(h.clone()) {
                     eprintln!("UCE_CAPTURE_PIPELINE_FAILED_TO_START phase=thread_spawn error={e}");
                     services::capture_pipeline_status::set_failed(format!("thread_spawn: {e}"));
                 }
                 services::print_watcher::spawn_ccc_temp_poll_fallback(h.clone());
+                services::source_autodiscovery::spawn_source_harvest_loop(h.clone());
                 services::office_intercept::spawn_office_winword_telemetry(h);
                 services::flight_recorder::spawn();
                 services::processed_retention::spawn();
@@ -2448,6 +2464,8 @@ pub fn run() {
             uce_pipeline_upload_stage,
             uce_ccc_capture_test,
             uce_ccc_run_autodiscovery,
+            uce_source_run_autodiscovery,
+            uce_harvest_local_ro_docs,
             uce_ccc_last_files_seen
         ])
         .build(tauri::generate_context!())
