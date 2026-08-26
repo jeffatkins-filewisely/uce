@@ -75,15 +75,41 @@ if ($env:LOCALAPPDATA) {
 Add-IfExists -List $dirs -Seen $seen -LiteralPath "C:\FileWisely\Incoming"
 Add-IfExists -List $dirs -Seen $seen -LiteralPath "C:\FileWisely\Scans"
 
+$scanRel = @(
+    "Pictures\Scanned Documents",
+    "Documents\Scanned Documents",
+    "Pictures\Fax",
+    "Documents\Fax",
+    "Pictures\EPSON Scan",
+    "Documents\EPSON Scan",
+    "Pictures\Epson Scan",
+    "Documents\Epson Scan",
+    "Pictures\Epson Scan 2",
+    "Documents\Epson Scan 2",
+    "Pictures\EPSON Scan 2",
+    "Documents\EPSON Scan 2",
+    "Pictures\Epson",
+    "Documents\Epson",
+    "Pictures\Brother",
+    "Documents\Brother",
+    "Pictures\HP Scans",
+    "Documents\HP Scans",
+    "Pictures\HP",
+    "Documents\HP",
+    "Pictures\Canon",
+    "Documents\Canon",
+    "Pictures\ScanSnap",
+    "Documents\ScanSnap",
+    "Pictures\ScanSnap Home",
+    "Documents\ScanSnap Home"
+)
 if ($env:USERPROFILE) {
-    $b = $env:USERPROFILE
-    Add-IfExists -List $dirs -Seen $seen -LiteralPath (Join-Path $b "Pictures\Scanned Documents")
-    Add-IfExists -List $dirs -Seen $seen -LiteralPath (Join-Path $b "Documents\Scanned Documents")
-    Add-IfExists -List $dirs -Seen $seen -LiteralPath (Join-Path $b "Documents\Fax")
-    Add-IfExists -List $dirs -Seen $seen -LiteralPath (Join-Path $b "Documents\EPSON Scan")
-    Add-IfExists -List $dirs -Seen $seen -LiteralPath (Join-Path $b "Documents\Brother")
-    Add-IfExists -List $dirs -Seen $seen -LiteralPath (Join-Path $b "Pictures\EPSON Scan")
-    Add-IfExists -List $dirs -Seen $seen -LiteralPath (Join-Path $b "Pictures\Brother")
+    $homes = @($env:USERPROFILE, (Join-Path $env:USERPROFILE "OneDrive"))
+    foreach ($home in $homes) {
+        foreach ($rel in $scanRel) {
+            Add-IfExists -List $dirs -Seen $seen -LiteralPath (Join-Path $home $rel)
+        }
+    }
 }
 
 $parent = Split-Path -Parent $OutPath

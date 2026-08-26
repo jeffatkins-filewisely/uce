@@ -76,6 +76,9 @@ pub fn is_scan_or_print_dialog(app_name: &str, title: &str) -> bool {
         "epson ds",
         "epson scan",
         "brother",
+        "hp scan",
+        "scansnap",
+        "canon",
         "attach - from camera",
         "attach from camera",
         "camera/scanner",
@@ -109,6 +112,10 @@ fn looks_like_scan_name(path: &Path) -> bool {
     name.contains("scan")
         || name.contains("wia")
         || name.contains("epson")
+        || name.contains("brother")
+        || name.contains("scansnap")
+        || name.contains("canon")
+        || name.contains("hp scan")
         || name.contains("twain")
         || name.contains("img")
         || name.starts_with("image")

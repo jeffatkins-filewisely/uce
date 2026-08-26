@@ -104,7 +104,7 @@ Implement or extend **uce-ingest** (or your capture Edge Function) as follows.
 
 ## Part D — Optional future UCE enhancements (not required for backend)
 
-- Default scan destinations (`Pictures\Scanned Documents`, Epson/Brother vendor folders, `C:\FileWisely\Scans`) are watched. Source autodiscovery (`source_autodiscovery.rs`) learns additional print/scan folders after WIA or print-to-PDF dialogs and persists them to `auto_discovered_source_dirs`. Scan images (jpg/tif/png/bmp) from those roots convert to PDF via LibreOffice. `\\.\Usbscan0` is a device port and cannot be watched as a folder.
+- Default scan destinations (`Pictures\Scanned Documents`, Epson Scan 2 / Brother / HP / Canon / ScanSnap vendor folders, OneDrive copies of those, `C:\FileWisely\Scans`) are watched. Source autodiscovery (`source_autodiscovery.rs`) learns additional print/scan folders after WIA or print-to-PDF dialogs and persists them to `auto_discovered_source_dirs`. Scan images (jpg/tif/png/bmp) from those roots convert to PDF via LibreOffice. `\\.\Usbscan0` is a device port and cannot be watched as a folder.
 - Optionally send Rust **`matched_rule`** (folder) as a separate field in the JSON body if product wants both without inference — **would require a small UCE change + backend field**.
 
 ---

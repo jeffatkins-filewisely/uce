@@ -22,8 +22,8 @@
 //! `ProgramData` paths, classic `C:\\CCC\\WORKFILES`, `C:\\CCC`, **first-level subfolders** under
 //! `C:\\CCC` and under `%ProgramData%\\CCCInformation Services` (skipping obvious non-export dirs),
 //! `%LOCALAPPDATA%\\Temp\\CCC` (**always** listed so UCE creates it and watches even before CCC runs),
-//! Windows scan destinations (`Pictures\\Scanned Documents`, Epson/Brother vendor folders,
-//! `C:\\FileWisely\\Scans`), plus `extra_dirs` from config.
+//! Windows scan destinations (`Pictures\\Scanned Documents`, Epson/Brother/HP/Canon/ScanSnap
+//! vendor folders, `C:\\FileWisely\\Scans`), plus `extra_dirs` from config.
 //!
 //! **Machine seed:** `C:\\FileWisely\\App\\uce-pdf-watch.seed.json` (optional JSON with `extra_dirs` /
 //! `office_intercept_extra_dirs`) is **unioned** with per-user `uce-pdf-watch.json` so elevated installers
@@ -513,29 +513,44 @@ pub fn scan_destination_roots_with_rules() -> Vec<(PathBuf, &'static str)> {
     let Ok(user_profile) = std::env::var("USERPROFILE") else {
         return out;
     };
-    let base = PathBuf::from(&user_profile);
-    let pictures = base.join("Pictures");
-    let documents = base.join("Documents");
-    let onedrive = base.join("OneDrive");
-
-    let pairs: [(&Path, &str, &'static str); 14] = [
-        (&pictures, "Scanned Documents", "scan_pictures"),
-        (&documents, "Scanned Documents", "scan_documents"),
-        (&documents, "Fax", "scan_documents"),
-        (&documents, "EPSON Scan", "scan_vendor"),
-        (&documents, "Epson Scan", "scan_vendor"),
-        (&documents, "Epson", "scan_vendor"),
-        (&documents, "Brother", "scan_vendor"),
-        (&pictures, "EPSON Scan", "scan_vendor"),
-        (&pictures, "Epson", "scan_vendor"),
-        (&pictures, "Brother", "scan_vendor"),
-        (&onedrive, "Pictures\\Scanned Documents", "scan_pictures"),
-        (&onedrive, "Documents\\Scanned Documents", "scan_documents"),
-        (&onedrive, "Documents\\EPSON Scan", "scan_vendor"),
-        (&onedrive, "Documents\\Brother", "scan_vendor"),
+    let homes = [
+        PathBuf::from(&user_profile),
+        PathBuf::from(&user_profile).join("OneDrive"),
     ];
-    for (parent, child, rule) in pairs {
-        push_general_pair(&mut out, parent.join(child), rule);
+
+    // Relative to the user profile and to OneDrive. Missing folders are skipped.
+    let relative: &[(&str, &'static str)] = &[
+        ("Pictures\\Scanned Documents", "scan_pictures"),
+        ("Documents\\Scanned Documents", "scan_documents"),
+        ("Pictures\\Fax", "scan_pictures"),
+        ("Documents\\Fax", "scan_documents"),
+        ("Pictures\\EPSON Scan", "scan_vendor"),
+        ("Documents\\EPSON Scan", "scan_vendor"),
+        ("Pictures\\Epson Scan", "scan_vendor"),
+        ("Documents\\Epson Scan", "scan_vendor"),
+        ("Pictures\\Epson Scan 2", "scan_vendor"),
+        ("Documents\\Epson Scan 2", "scan_vendor"),
+        ("Pictures\\EPSON Scan 2", "scan_vendor"),
+        ("Documents\\EPSON Scan 2", "scan_vendor"),
+        ("Pictures\\Epson", "scan_vendor"),
+        ("Documents\\Epson", "scan_vendor"),
+        ("Pictures\\Brother", "scan_vendor"),
+        ("Documents\\Brother", "scan_vendor"),
+        ("Pictures\\HP Scans", "scan_vendor"),
+        ("Documents\\HP Scans", "scan_vendor"),
+        ("Pictures\\HP", "scan_vendor"),
+        ("Documents\\HP", "scan_vendor"),
+        ("Pictures\\Canon", "scan_vendor"),
+        ("Documents\\Canon", "scan_vendor"),
+        ("Pictures\\ScanSnap", "scan_vendor"),
+        ("Documents\\ScanSnap", "scan_vendor"),
+        ("Pictures\\ScanSnap Home", "scan_vendor"),
+        ("Documents\\ScanSnap Home", "scan_vendor"),
+    ];
+    for home in &homes {
+        for (rel, rule) in relative {
+            push_general_pair(&mut out, home.join(rel), rule);
+        }
     }
     out
 }
