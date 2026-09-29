@@ -63,7 +63,9 @@ function contextGroup(type) {
     t === "ccc_estimate" ||
     t === "ccc_supplement" ||
     t === "ccc_final_bill" ||
-    t === "ccc_print_dialog"
+    t === "ccc_print_dialog" ||
+    t === "ccc_work_order" ||
+    t === "mitchell_work_order"
   ) {
     return "ccc_doc";
   }

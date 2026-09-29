@@ -51,6 +51,17 @@ export function inferCccDocSignalsFromTitle(title) {
     }
   }
   if (
+    /\bwork\s*order\b/.test(t) ||
+    /\bworkorder\b/.test(t) ||
+    /\blabor\s+(assign|hours|op)/.test(t) ||
+    /\bflag\s*hours?\b/.test(t)
+  ) {
+    if (!seen.has("work_order")) {
+      seen.add("work_order");
+      out.push({ key: "work_order", label: "Work order / flag hours" });
+    }
+  }
+  if (
     /\bestimate\b/.test(t) &&
     !/\bsupplement\b/.test(t) &&
     !/\bsupp\b/.test(t) &&

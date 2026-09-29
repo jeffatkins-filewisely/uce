@@ -50,6 +50,7 @@ If `UCE_CCC_TEMP_WATCH_ONLY` (or equivalent print config) is enabled, **`ccc_bat
 | `workflow_kind`, `bucket`, `action_allowed` | From same context snapshot |
 | `classification`, `event_meta`, `metadata` | Mirror rules + device + `capture_source` |
 | `document_type`, `desktop_document_subtype` | Derived in JS from context/title rules |
+| `flag_pay` | When the capture is a CCC/Mitchell **work order**, UCE attaches labor/flag hours so FileWisely can set RO repair flags. Also POSTs `action: "flag_pay_sync"` to `uce-ingest` (and optional `uce-flag-pay`). |
 
 **Critical distinction for backend engineers**
 
@@ -85,6 +86,27 @@ Implement or extend **uce-ingest** (or your capture Edge Function) as follows.
 ### C.3 Idempotency & duplicates
 
 - Key uploads by **`business_id` + content hash or (`file_path` + `mtime`/`captured_at`)** to avoid duplicate inbox rows when UCE retries or debounce fires twice.
+
+### C.3b Flag pay / work-order hours (technician RO repair flags)
+
+When estimators print or open a **work order** in CCC ONE or Mitchell, UCE classifies it as `work_order_pdf` (or screenshot) and sends:
+
+```json
+{
+  "action": "flag_pay_sync",
+  "business_id": "<uuid>",
+  "device_id": "<uce-device-id>",
+  "repair_order_number": "90066",
+  "ro_number": "90066",
+  "source_system": "ccc",
+  "document_type": "work_order",
+  "flag_hours_total": 6.5,
+  "labor_lines": [{ "op": "body", "hours": 4.0, "tech": "" }],
+  "update_ro_repair_flags": true
+}
+```
+
+FileWisely ingest / `uce-flag-pay` should write those hours onto the RO’s **repair flags** (the technician flag-pay hours), not clock time. The same object is on capture POSTs as `flag_pay` when a work-order PDF is uploaded.
 
 ### C.4 Classification & RO linkage (server-side)
 

@@ -7,6 +7,7 @@ commands.allow = [
   "list_fw_pdf_metas_in_filewisely_incoming",
   "list_pdf_metas_since",
   "read_pdf_file",
+  "uce_extract_flag_pay",
   "save_tenant_business_id",
   "save_tenant_from_connect",
   "save_tenant_manual_all",

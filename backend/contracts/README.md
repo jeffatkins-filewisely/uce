@@ -37,6 +37,20 @@ if (body?.action === "heartbeat") {
 
 Requires `zod` in the edge bundle (standard in Lovable projects).
 
+## Usage in `uce-ingest` (flag-pay / work-order hours)
+
+```ts
+import { parseFlagPaySyncRequest } from "../contracts/uceFlagPay.ts";
+
+if (body?.action === "flag_pay_sync") {
+  const parsed = parseFlagPaySyncRequest(body);
+  if (!parsed.ok) {
+    return new Response(JSON.stringify(parsed), { status: 400 });
+  }
+  // Write parsed.data.flag_hours_total + labor_lines onto the RO repair flags.
+}
+```
+
 ## Claim-batch **response** items (mirror_file)
 
 Every claimed job in `items[]` **must** include ack identity fields the desktop echoes on `ccc-package-ack`:

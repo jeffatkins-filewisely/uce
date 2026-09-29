@@ -11,6 +11,7 @@ import {
 } from "@tauri-apps/api/window";
 
 import { inferCccDocSignalsFromTitle } from "./uceCccTitleSignals.js";
+import { buildFlagPaySnapshot } from "./uceFlagPay.js";
 import {
   buildRoSupplementTruthModel,
   findSequenceGaps,
@@ -998,6 +999,177 @@ function getRoStatusUrl() {
  * Extract RO# from CCC-style window titles (leading digits, RO/RO#/ro#, repair order, etc.).
  * Order: leading digits first, then common CCC ONE / portal patterns.
  */
+const FLAG_PAY_BY_RO_KEY = "uce_flag_pay_by_ro";
+
+function loadFlagPayByRo() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(FLAG_PAY_BY_RO_KEY) || "{}");
+    return raw && typeof raw === "object" ? raw : {};
+  } catch {
+    return {};
+  }
+}
+
+function rememberFlagPaySnapshot(snap) {
+  if (!snap || !snap.repair_order_number) return;
+  const all = loadFlagPayByRo();
+  all[String(snap.repair_order_number)] = {
+    ...snap,
+    remembered_at: new Date().toISOString(),
+  };
+  try {
+    localStorage.setItem(FLAG_PAY_BY_RO_KEY, JSON.stringify(all));
+  } catch {
+    /* ignore quota */
+  }
+}
+
+function flagPayForRo(ro) {
+  const id = String(ro || "").trim();
+  if (!id) return null;
+  const row = loadFlagPayByRo()[id];
+  return row && typeof row === "object" ? row : null;
+}
+
+function resolveFlagPaySyncUrl() {
+  const explicit = (import.meta.env.VITE_UCE_FLAG_PAY_URL || "").trim();
+  if (explicit) return explicit;
+  const upload = (getBackendUploadUrl() || "").trim();
+  if (!upload) return "";
+  try {
+    const u = new URL(upload);
+    const p = u.pathname.replace(/\/+$/, "");
+    if (p.includes("uce-ingest")) {
+      u.pathname = p.replace(/uce-ingest[^/]*$/, "uce-flag-pay");
+      return u.toString();
+    }
+  } catch (_) {
+    /* ignore */
+  }
+  return upload;
+}
+
+async function syncFlagPayToFileWisely(snap) {
+  if (!snap || !snap.update_ro_repair_flags) return;
+  const bid = getBusinessId();
+  const key = getSupabaseAnonKey();
+  const url = getBackendUploadUrl();
+  if (!bid || !key || !url) return;
+  const body = {
+    action: "flag_pay_sync",
+    business_id: bid,
+    device_id: getDeviceId(),
+    repair_order_number: snap.repair_order_number,
+    ro_number: snap.repair_order_number,
+    source_system: snap.source_system,
+    document_type: "work_order",
+    window_title: snap.window_title || "",
+    file_path: snap.file_path || "",
+    flag_hours_total: snap.flag_hours_total,
+    labor_lines: snap.labor_lines || [],
+    update_ro_repair_flags: true,
+    evidence: snap.evidence || [],
+  };
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${key}`,
+        apikey: key,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      console.warn("[UCE] flag_pay_sync HTTP", res.status);
+    } else {
+      console.info(
+        "[UCE] flag_pay_sync OK ro=",
+        snap.repair_order_number,
+        "hours=",
+        snap.flag_hours_total
+      );
+    }
+  } catch (e) {
+    console.warn("[UCE] flag_pay_sync:", e);
+  }
+  const derived = resolveFlagPaySyncUrl();
+  if (derived && derived !== url) {
+    try {
+      await fetch(derived, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${key}`,
+          apikey: key,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+      });
+    } catch (_) {
+      /* optional dedicated function */
+    }
+  }
+}
+
+async function resolveFlagPayForUpload({
+  sourceApp,
+  windowTitle,
+  filePath,
+  matchedRule,
+  knownRo,
+}) {
+  let extractedText = "";
+  if (filePath && /\.pdf$/i.test(String(filePath))) {
+    try {
+      const rust = await invoke("uce_extract_flag_pay", {
+        path: String(filePath),
+        windowTitle: windowTitle || "",
+        sourceApp: sourceApp || "",
+      });
+      if (rust && typeof rust === "object") {
+        extractedText = String(rust.text_excerpt || "");
+        const snap = buildFlagPaySnapshot({
+          sourceApp,
+          windowTitle,
+          filePath,
+          matchedRule,
+          extractedText,
+          knownRo: knownRo || rust.repair_order_number || "",
+        });
+        if (snap) {
+          if (rust.flag_hours_total != null && snap.flag_hours_total == null) {
+            snap.flag_hours_total = rust.flag_hours_total;
+          }
+          if (
+            Array.isArray(rust.labor_lines) &&
+            rust.labor_lines.length &&
+            !snap.labor_lines.length
+          ) {
+            snap.labor_lines = rust.labor_lines;
+          }
+          if (!snap.repair_order_number && rust.repair_order_number) {
+            snap.repair_order_number = rust.repair_order_number;
+          }
+          snap.update_ro_repair_flags = !!(
+            snap.flag_hours_total != null && snap.repair_order_number
+          );
+        }
+        return snap;
+      }
+    } catch (e) {
+      console.warn("[UCE] uce_extract_flag_pay:", e);
+    }
+  }
+  return buildFlagPaySnapshot({
+    sourceApp,
+    windowTitle,
+    filePath,
+    matchedRule,
+    extractedText,
+    knownRo,
+  });
+}
+
 function extractRoFromTitleForMonitor(title) {
   if (!title || typeof title !== "string") return "";
   const t = title.trim().replace(/\u00a0/g, " ");
@@ -1006,6 +1178,8 @@ function extractRoFromTitleForMonitor(title) {
     /\bRO[#:\s-]*(\d{4,6})\b/i,
     /\bro[#:\s-]*(\d{4,6})\b/i,
     /\bRepair\s*Order[#:\s]*(\d{4,6})\b/i,
+    /\bWork\s*Order[#:\s-]*(\d{4,6})\b/i,
+    /\bWO[#:\s-]*(\d{4,6})\b/i,
   ];
   for (const re of patterns) {
     const m = t.match(re);
@@ -1036,6 +1210,7 @@ const LEGACY_RO_KEY = "uce_last_ro_number";
 /** Train (T) targets: CCC uses PDF/folder; others default to screenshot-only uploads. */
 const UCE_TRAIN_WORKFLOWS = [
   "ccc",
+  "mitchell",
   "tesla_epc",
   "parts_trader",
   "ops_trax",
@@ -1217,9 +1392,15 @@ function isCccWorkflowWindow(ctx) {
   const pcm = (ctx.preferred_capture_mode || "").toLowerCase();
   if (pcm === "pdf") return true;
   const wk = (ctx.workflow_kind || "").toLowerCase();
-  if (wk === "ccc") return true;
+  if (wk === "ccc" || wk === "mitchell") return true;
   const rule = (ctx.matched_rule || "").toLowerCase();
-  if (rule.startsWith("ccc_") || rule.startsWith("ccc_trained")) return true;
+  if (
+    rule.startsWith("ccc_") ||
+    rule.startsWith("ccc_trained") ||
+    rule.startsWith("mitchell_")
+  ) {
+    return true;
+  }
   const title = (ctx.window_title || "").toLowerCase();
   // CCC ONE often uses titles that start with RO# only: "90066 - Customer - Vehicle…" (no "CCC" / "RO" text).
   if (/^\d{4,6}\b/.test(title.trim())) return true;
@@ -1931,6 +2112,10 @@ html, body {
 
 .uce-btn.uce-ctx-glow--print {
   box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.45), 0 0 18px rgba(59, 130, 246, 0.42);
+}
+
+.uce-btn.uce-ctx-glow--work_order {
+  box-shadow: 0 0 0 1px rgba(20, 184, 166, 0.48), 0 0 16px rgba(13, 148, 136, 0.36);
 }
 
 .uce-btn.uce-ctx-glow--tesla {
@@ -4714,13 +4899,25 @@ function buildProductionRoPanel(roUrl, tid, roNum, roData) {
   roNumEl.className = "uce-prod-ro-num";
   roNumEl.textContent = roNum ? `RO ${roNum}` : "No RO in title";
   roLine.appendChild(roNumEl);
+  const flagSnap = flagPayForRo(roNum);
+  if (flagSnap && flagSnap.flag_hours_total != null) {
+    const flagLine = document.createElement("div");
+    flagLine.className = "uce-prod-mini";
+    const sys =
+      flagSnap.source_system && flagSnap.source_system !== "unknown"
+        ? ` (${flagSnap.source_system})`
+        : "";
+    flagLine.textContent = `Flag hours ${flagSnap.flag_hours_total}${sys} — sent to FileWisely to set RO repair flags`;
+    roLine.appendChild(flagLine);
+  }
   top.appendChild(roLine);
   root.appendChild(top);
 
   if (!roNum) {
     const hint = document.createElement("p");
     hint.className = "uce-prod-mini";
-    hint.textContent = "Open a repair order in CCC to see FileWisely status.";
+    hint.textContent =
+      "Open a repair order or work order in CCC or Mitchell to see FileWisely status.";
     root.appendChild(hint);
     return root;
   }
@@ -5211,16 +5408,27 @@ function resolveDocumentSubtype(matchedRule, windowTitle) {
   if (rule === "ccc_supplement") return "supplement";
   if (rule === "ccc_final_bill") return "final_bill";
   if (rule === "ccc_estimate") return "estimate";
+  if (rule === "ccc_work_order" || rule.startsWith("mitchell")) return "work_order";
 
   if (rule === "ccc_open" || rule.startsWith("ccc_trained_") || rule.startsWith("ccc_")) {
     if (title.includes("final bill")) return "final_bill";
     if (title.includes("supplement") || /\bsupp\b/.test(title)) return "supplement";
+    if (title.includes("work order") || title.includes("flag hours")) {
+      return "work_order";
+    }
     if (title.includes("estimate")) return "estimate";
     return null;
   }
 
   if (title.includes("final bill")) return "final_bill";
   if (title.includes("supplement") || /\bsupp\b/.test(title)) return "supplement";
+  if (
+    title.includes("work order") ||
+    title.includes("flag hours") ||
+    title.includes("mitchell")
+  ) {
+    return "work_order";
+  }
   if (title.includes("estimate")) return "estimate";
   return null;
 }
@@ -5236,11 +5444,13 @@ function resolveDocumentType(matchedRule, isPdf, windowTitle) {
   if (isPdf) {
     if (sub === "supplement") return "supplement_pdf";
     if (sub === "final_bill") return "final_bill_pdf";
+    if (sub === "work_order") return "work_order_pdf";
     if (sub === "estimate") return "estimate_pdf";
     return "estimate_pdf";
   }
   if (sub === "supplement") return "supplement_screenshot";
   if (sub === "final_bill") return "final_bill_screenshot";
+  if (sub === "work_order") return "work_order_screenshot";
   if (sub === "estimate") return "estimate_screenshot";
   return "quick_screenshot";
 }
@@ -5248,12 +5458,13 @@ function resolveDocumentType(matchedRule, isPdf, windowTitle) {
 function inferPreferredModeFromContext(ctx) {
   if (!ctx || typeof ctx !== "object") return "screenshot";
   const wk = (ctx.workflow_kind || "").toLowerCase();
-  if (wk === "ccc") return "pdf";
+  if (wk === "ccc" || wk === "mitchell") return "pdf";
   if (
     wk &&
     wk !== "unknown" &&
     wk !== "excluded" &&
-    wk !== "ccc"
+    wk !== "ccc" &&
+    wk !== "mitchell"
   ) {
     return "screenshot";
   }
@@ -5833,6 +6044,28 @@ async function uploadCapture(
       trigger_kind: meta.triggerKind,
     },
   };
+
+  let flagPay = null;
+  try {
+    flagPay = await resolveFlagPayForUpload({
+      sourceApp,
+      windowTitle,
+      filePath: pathForPayload,
+      matchedRule,
+      knownRo: getMonitoredCurrentRo?.() || currentRoLive || "",
+    });
+  } catch (e) {
+    console.warn("[UCE] flag pay resolve:", e);
+  }
+  if (flagPay) {
+    payload.flag_pay = flagPay;
+    payload.metadata.flag_pay = flagPay;
+    payload.event_meta.flag_pay = flagPay;
+    rememberFlagPaySnapshot(flagPay);
+    if (flagPay.update_ro_repair_flags) {
+      void syncFlagPayToFileWisely(flagPay);
+    }
+  }
 
   if (!getBackendUploadUrl()) {
     if (fwPipelinePath) {
@@ -7996,6 +8229,8 @@ window.__uceSavePdfWatchConfig = (config) =>
 window.__uceGetRoStatusUrl = getRoStatusUrl;
 window.__uceFetchRoStatus = fetchRoStatus;
 window.__uceExtractRoFromTitle = extractRoFromTitleForMonitor;
+window.__uceBuildFlagPay = buildFlagPaySnapshot;
+window.__uceFlagPayForRo = flagPayForRo;
 window.__uceIsCccWorkflowWindow = isCccWorkflowWindow;
 window.__uceResolveRoForAwareness = resolveRoForAwareness;
 window.__uceHealthStrip = updateUceHealthStrip;

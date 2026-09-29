@@ -10,6 +10,7 @@ mod services;
 mod tenant_config;
 mod filewisely_defaults;
 mod uce_connect;
+mod flag_pay;
 mod types;
 mod uce_webview_url;
 mod connection_diagnostics;
@@ -2410,6 +2411,7 @@ pub fn run() {
             get_pdf_watch_config,
             save_pdf_watch_config,
             read_pdf_file,
+            flag_pay::uce_extract_flag_pay,
             uce_move_fw_pdf_outcome,
             uce_fw_pipeline_log,
             uce_log_pdf_lifecycle,
