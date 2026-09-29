@@ -14,13 +14,19 @@ This folder is not automatically a Git repository: run `git init`, create a repo
    `git tag v0.1.2 && git push origin v0.1.2`  
    The workflow in `.github/workflows/release.yml` builds the MSI, signs updater artifacts, and attaches them to the GitHub release. Installed clients poll for updates (see `maybeCheckForUceAppUpdate` in `src/main.js`).
 
-### Business ID deep link (FileWisely web → desktop)
+### Connect to computer (FileWisely web → desktop)
 
-After install, users should not need to paste the UUID manually if the web app opens the desktop handler:
+After install, shops should not paste credentials. FileWisely **Connect to computer** opens:
 
 `uce://connect?business_id=<uuid>`
 
-Example anchor/button: `href="uce://connect?business_id=${businessId}"` (or redirect to that URL from your edge function). UCE registers the `uce` scheme on Windows; a running instance receives the link via the single-instance + deep-link plugins.
+or a one-shot `uce://connect?handshake_token=<token>` / `uce://connect?token=<token>`.
+
+The production ingest URL is built into UCE (`https://pujwbzqnoevqxrwipnwo.supabase.co/functions/v1/uce-ingest`), so a business-id-only link is enough for Anaheim and every other customer. Optional `backend_url` + `anon_key` on the link still win when present.
+
+If the deep link misses, first launch shows all **three** values (business ID, ingest URL, anon key) so support can paste them. Rust applies `uce://` links as soon as Windows delivers them, even before the overlay JS is ready.
+
+Example: `href="uce://connect?business_id=${businessId}"`. UCE registers the `uce` scheme on Windows; a running instance receives the link via the single-instance + deep-link plugins.
 
 ## Ingestion pipeline (desktop → FileWisely backend)
 

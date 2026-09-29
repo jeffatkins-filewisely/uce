@@ -8,6 +8,8 @@ mod memory_store;
 mod pdf_watch_config;
 mod services;
 mod tenant_config;
+mod filewisely_defaults;
+mod uce_connect;
 mod types;
 mod uce_webview_url;
 mod connection_diagnostics;
@@ -2242,6 +2244,7 @@ pub fn run() {
                 .collect();
             if !deeplinks.is_empty() {
                 eprintln!("[UCE] single-instance forwarding deeplinks to webview: {:?}", deeplinks);
+                uce_connect::spawn_apply_connect_urls(app.clone(), deeplinks.clone());
                 if let Err(e) = app.emit("uce-argv-deeplinks", deeplinks) {
                     eprintln!("[UCE] emit uce-argv-deeplinks: {e}");
                 }
@@ -2281,6 +2284,7 @@ pub fn run() {
                 if let Err(e) = app.deep_link().register_all() {
                     eprintln!("[UCE] deep_link register_all: {}", e);
                 }
+                uce_connect::listen_and_apply_startup_deeplinks(app.handle());
             }
             {
                 let h = app.handle().clone();

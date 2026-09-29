@@ -157,6 +157,7 @@ pub async fn post_ingest_heartbeat(app: &AppHandle, device_id: &str) -> Heartbea
     let device_name = sysinfo::System::host_name().unwrap_or_else(|| "unknown".to_string());
     let os_info = sysinfo::System::long_os_version().unwrap_or_else(|| "unknown".to_string());
 
+    // Omit user_id when unknown so ingest does not clobber a pairing anchor.
     let body = json!({
         "action": "heartbeat",
         "business_id": bid,
@@ -164,7 +165,6 @@ pub async fn post_ingest_heartbeat(app: &AppHandle, device_id: &str) -> Heartbea
         "device_name": device_name,
         "agent_version": version,
         "os_info": os_info,
-        "user_id": "",
     });
 
     let client = match reqwest::Client::builder()

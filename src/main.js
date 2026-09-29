@@ -35,6 +35,12 @@ import {
 } from "./uceContextSignals.js";
 import { getUceDeviceId } from "./uceDeviceId.js";
 import {
+  FILEWISELY_DEFAULT_INGEST_URL,
+  isValidUuid,
+  parseUceConnectParams,
+  resolveHandshakeClaimUrl as resolveHandshakeClaimUrlFromDefaults,
+} from "./filewiselyDefaults.js";
+import {
   getUceSuppressAllCached,
   initUcePopupSuppression,
   tracePopupSuppressed,
@@ -66,7 +72,11 @@ let resolvedAnonKey = "";
 let resolvedBusinessId = "";
 
 function getBackendUploadUrl() {
-  return (resolvedBackendUrl || ENV_UCE_UPLOAD_URL).trim();
+  return (
+    resolvedBackendUrl ||
+    ENV_UCE_UPLOAD_URL ||
+    FILEWISELY_DEFAULT_INGEST_URL
+  ).trim();
 }
 
 function getSupabaseAnonKey() {
@@ -778,7 +788,6 @@ async function sendUceHeartbeat() {
       device_name: typeof deviceName === "string" ? deviceName : "",
       agent_version: version || "0.0.0",
       os_info: typeof osInfo === "string" ? osInfo : "",
-      user_id: "",
       ccc_package_capable: cccPackageCapable,
       ccc_package_root: cccPackageCapable ? String(cccPackageRoot).trim() : "",
       device_health: deviceHealth,
@@ -2185,12 +2194,25 @@ html, body {
 
 .uce-tenant-setup-inner {
   width: 100%;
-  max-width: 380px;
+  max-width: 400px;
   padding: 18px 20px;
   border-radius: 10px;
   background: rgba(30, 41, 59, 0.98);
   border: 1px solid rgba(148, 163, 184, 0.35);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+  max-height: calc(100vh - 24px);
+  overflow: auto;
+}
+
+.uce-tenant-label {
+  display: block;
+  margin: 8px 0 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: #cbd5e1;
+  font-family: "Segoe UI", sans-serif;
 }
 
 .uce-tenant-setup-title {
@@ -2869,10 +2891,15 @@ html.uce-runtime-windows #ucePrinterSevereModal {
 <div id="uceTenantSetup" class="uce-tenant-setup" hidden>
   <div class="uce-tenant-setup-inner">
     <h2 class="uce-tenant-setup-title">Connect FileWisely</h2>
-    <p class="uce-tenant-setup-hint">Paste your <strong>business ID</strong> (UUID) from FileWisely (Advanced Settings in the web app). Required to upload captures.</p>
+    <p class="uce-tenant-setup-hint">Click <strong>Connect to computer</strong> in FileWisely — UCE should pair automatically. If it does not, paste the three values FileWisely shows (business ID, ingest URL, anon key).</p>
+    <label class="uce-tenant-label" for="uceTenantInput">Business ID</label>
     <input type="text" id="uceTenantInput" class="uce-tenant-input" spellcheck="false" autocomplete="off" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" aria-label="Business ID" />
+    <label class="uce-tenant-label" for="uceTenantUrlInput">Ingest URL</label>
+    <input type="text" id="uceTenantUrlInput" class="uce-tenant-input" spellcheck="false" autocomplete="off" placeholder="https://…/functions/v1/uce-ingest" aria-label="Ingest URL" />
+    <label class="uce-tenant-label" for="uceTenantKeyInput">Anon key</label>
+    <input type="password" id="uceTenantKeyInput" class="uce-tenant-input" spellcheck="false" autocomplete="off" placeholder="Supabase anon key" aria-label="Anon key" />
     <p id="uceTenantError" class="uce-tenant-error" hidden role="alert"></p>
-    <button type="button" class="uce-tenant-save" id="uceTenantSaveBtn">Continue</button>
+    <button type="button" class="uce-tenant-save" id="uceTenantSaveBtn">Connect</button>
   </div>
 </div>
 <div id="ucePrinterSevereModal" class="uce-printer-severe-modal" hidden>
@@ -2946,19 +2973,27 @@ function getUceEventLog() {
 currentRoLive = loadPersistedCurrentRo();
 updateRoToolbarLabel();
 
-/** Standard UUID string (any version). */
-function isValidUuid(value) {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-    String(value).trim()
-  );
+let dismissTenantSetupWaiter = null;
+
+function dismissTenantSetupIfOpen() {
+  hideTenantOverlayIfShown();
+  if (dismissTenantSetupWaiter) {
+    const done = dismissTenantSetupWaiter;
+    dismissTenantSetupWaiter = null;
+    done();
+  }
 }
 
 /**
  * First launch: no tenant in uce-tenant.json and no VITE_UCE_BUSINESS_ID — block until saved.
+ * FileWisely Connect-to-computer should fill all three values automatically. The form
+ * stays visible so shops (and support) can still paste business ID / ingest URL / anon key.
  */
 async function showTenantSetupDialog() {
   const overlay = document.getElementById("uceTenantSetup");
   const input = document.getElementById("uceTenantInput");
+  const urlInput = document.getElementById("uceTenantUrlInput");
+  const keyInput = document.getElementById("uceTenantKeyInput");
   const errEl = document.getElementById("uceTenantError");
   const btn = document.getElementById("uceTenantSaveBtn");
   if (!overlay || !input || !errEl || !btn) {
@@ -2968,44 +3003,65 @@ async function showTenantSetupDialog() {
   /* Resize the native window *before* showing the overlay. If we show first at ~58×38px,
      users only see a random slice of the dialog (e.g. "Settings in the web app)") — no field/button. */
   try {
-    await invoke("uce_set_overlay_logical_size", { width: 420, height: 280 });
+    await invoke("uce_set_overlay_logical_size", { width: 460, height: 460 });
   } catch (e) {
     console.error("tenant setup resize (1):", e);
     try {
-      await invoke("uce_set_overlay_logical_size", { width: 420, height: 280 });
+      await invoke("uce_set_overlay_logical_size", { width: 460, height: 460 });
     } catch (e2) {
       console.error("tenant setup resize (2):", e2);
     }
   }
-  /* Class before delays so getCompactWindowSize() keeps 420×280 if anything resizes the window. */
+  /* Class before delays so getCompactWindowSize() keeps 460×460 if anything resizes the window. */
   appEl.classList.add("uce-tenant-setup-open");
   await delayToastLayout(80);
   await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
   overlay.hidden = false;
   input.value = "";
+  if (urlInput) {
+    urlInput.value = getBackendUploadUrl() || FILEWISELY_DEFAULT_INGEST_URL;
+  }
+  if (keyInput) {
+    keyInput.value = getSupabaseAnonKey();
+  }
   errEl.hidden = true;
   errEl.textContent = "";
   input.focus();
 
   return new Promise((resolve) => {
+    dismissTenantSetupWaiter = resolve;
+    const finish = async () => {
+      btn.removeEventListener("click", onClick);
+      input.removeEventListener("keydown", onKey);
+      dismissTenantSetupWaiter = null;
+      overlay.hidden = true;
+      appEl.classList.remove("uce-tenant-setup-open");
+      await setCompactWindowSize();
+      resolve();
+    };
     const submit = async () => {
       const v = input.value.trim();
+      const url = (urlInput?.value || "").trim();
+      const key = (keyInput?.value || "").trim();
       if (!isValidUuid(v)) {
         errEl.textContent =
-          "Enter a valid business ID (UUID). Copy it from FileWisely → Advanced Settings.";
+          "Enter a valid business ID (UUID). Copy it from FileWisely, or click Connect to computer in the web app.";
         errEl.hidden = false;
         return;
       }
       errEl.hidden = true;
       try {
-        await invoke("save_tenant_business_id", { business_id: v });
+        if (url || key) {
+          await invoke("save_tenant_manual_all", {
+            businessId: v,
+            backendUrl: url || FILEWISELY_DEFAULT_INGEST_URL,
+            anonKey: key,
+          });
+        } else {
+          await invoke("save_tenant_business_id", { business_id: v });
+        }
         await initTenantContext();
-        overlay.hidden = true;
-        appEl.classList.remove("uce-tenant-setup-open");
-        await setCompactWindowSize();
-        btn.removeEventListener("click", onClick);
-        input.removeEventListener("keydown", onKey);
-        resolve();
+        await finish();
       } catch (e) {
         errEl.textContent =
           typeof e === "string" ? e : e?.message || String(e);
@@ -3033,58 +3089,15 @@ function hideTenantOverlayIfShown() {
 
 /**
  * POST URL for `uce-claim-handshake` (one-shot token → tenant credentials).
- * Set `VITE_UCE_HANDSHAKE_CLAIM_URL` on the MSI if links omit `backend_url`.
- * Otherwise derived from `backend_url` query param or `VITE_UCE_UPLOAD_URL`.
+ * Production FileWisely URL is the default so Connect-to-computer works
+ * even when the MSI was built without Vite env vars.
  */
 function resolveHandshakeClaimUrl(backendUrlHint) {
-  const explicit = (import.meta.env.VITE_UCE_HANDSHAKE_CLAIM_URL || "").trim();
-  if (explicit) return explicit;
-  const base = (
-    (backendUrlHint && String(backendUrlHint).trim()) ||
-    ENV_UCE_UPLOAD_URL ||
-    ""
-  ).trim();
-  if (!base) return "";
-  try {
-    const u = new URL(base);
-    u.pathname = u.pathname.replace(/uce-ingest/i, "uce-claim-handshake");
-    return u.toString();
-  } catch {
-    return "";
-  }
-}
-
-/**
- * Parse `uce://connect?...` (FileWisely "Connect" / "Open in app") including
- * `backend_url`, `anon_key`, and optional `handshake_token` (server-minted one-shot).
- */
-function parseUceConnectParams(urlStr) {
-  try {
-    const s = String(urlStr).trim();
-    if (!/^uce:/i.test(s)) return null;
-    const normalized = s.replace(/^uce:\/\//i, "http://uce.invalid/");
-    const u = new URL(normalized);
-    const path = (u.pathname || "")
-      .replace(/^\/+|\/+$/g, "")
-      .toLowerCase();
-    if (path && path !== "connect") return null;
-    const handshakeToken =
-      (u.searchParams.get("handshake_token") || "").trim() || null;
-    const id =
-      (u.searchParams.get("business_id") || u.searchParams.get("token") || "")
-        .trim() || null;
-    const backendUrl = (u.searchParams.get("backend_url") || "").trim();
-    const anonKey = (u.searchParams.get("anon_key") || "").trim();
-    if (!handshakeToken && !id) return null;
-    return {
-      businessId: id,
-      backendUrl,
-      anonKey,
-      handshakeToken,
-    };
-  } catch {
-    return null;
-  }
+  return resolveHandshakeClaimUrlFromDefaults(
+    backendUrlHint,
+    ENV_UCE_UPLOAD_URL,
+    import.meta.env.VITE_UCE_HANDSHAKE_CLAIM_URL
+  );
 }
 
 async function tryApplyBusinessIdFromUrls(urls) {
@@ -3118,9 +3131,19 @@ async function tryApplyBusinessIdFromUrls(urls) {
       }
       try {
         console.info("[UCE] handshake claim POST", claimUrl);
+        const handshakeHeaders = { "Content-Type": "application/json" };
+        const handshakeKey = (
+          parsed.anonKey ||
+          getSupabaseAnonKey() ||
+          ""
+        ).trim();
+        if (handshakeKey) {
+          handshakeHeaders.Authorization = `Bearer ${handshakeKey}`;
+          handshakeHeaders.apikey = handshakeKey;
+        }
         const res = await fetch(claimUrl, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: handshakeHeaders,
           body: JSON.stringify({ token: parsed.handshakeToken }),
         });
         const text = await res.text();
@@ -3138,22 +3161,26 @@ async function tryApplyBusinessIdFromUrls(urls) {
           );
           continue;
         }
-        const bid = data?.business_id;
+        const payload =
+          data && data.business_id ? data : data?.data || data || {};
+        const bid = payload?.business_id;
         if (!bid || !isValidUuid(String(bid))) {
           console.warn("[UCE] handshake claim: missing or invalid business_id");
           continue;
         }
         await invoke("save_tenant_from_connect", {
           businessId: String(bid).trim(),
-          backendUrl: data.backend_url ? String(data.backend_url).trim() : null,
-          anonKey: data.anon_key ? String(data.anon_key).trim() : null,
+          backendUrl: payload.backend_url
+            ? String(payload.backend_url).trim()
+            : null,
+          anonKey: payload.anon_key ? String(payload.anon_key).trim() : null,
         });
         console.info(
           "UCE_HANDSHAKE_CLAIM_OK business_id=",
           String(bid).slice(0, 8)
         );
         await initTenantContext();
-        hideTenantOverlayIfShown();
+        dismissTenantSetupIfOpen();
         await setCompactWindowSize();
         showToast(
           "Connected FileWisely — handshake completed.",
@@ -3190,9 +3217,9 @@ async function tryApplyBusinessIdFromUrls(urls) {
         !!(parsed.anonKey && parsed.anonKey.trim())
       );
       await initTenantContext();
-      hideTenantOverlayIfShown();
+      dismissTenantSetupIfOpen();
       await setCompactWindowSize();
-      showToast("Connected FileWisely — business ID applied from link.", "success");
+      showToast("Connected FileWisely — shop connected from link.", "success");
       logEvent("tenant_connected_via_link", `business_id=${id}`);
       return;
     } catch (e) {
@@ -3396,6 +3423,7 @@ function logOverlayHitDebug(logicalW, logicalH, phase) {
 
 /** Must match `uce_set_overlay_logical_size` used for full-screen overlays in main.rs. */
 const UCE_OVERLAY_MODAL_LOGICAL = { width: 420, height: 280 };
+const UCE_TENANT_SETUP_LOGICAL = { width: 460, height: 460 };
 
 function getCompactWindowSize() {
   /* When these are open, `shouldMeasureDomForCompactWindow` is false — without this branch,
@@ -3405,7 +3433,7 @@ function getCompactWindowSize() {
     return { ...UCE_OVERLAY_MODAL_LOGICAL };
   }
   if (appEl.classList.contains("uce-tenant-setup-open")) {
-    return { ...UCE_OVERLAY_MODAL_LOGICAL };
+    return { ...UCE_TENANT_SETUP_LOGICAL };
   }
   if (getDockChromeHiddenPreference() && shouldMeasureDomForCompactWindow()) {
     if (
@@ -7780,6 +7808,9 @@ async function uceRuntimePrinterCheck() {
     try {
       await listen("uce-tenant-saved", async () => {
         await initTenantContext();
+        if (getBusinessId()) {
+          dismissTenantSetupIfOpen();
+        }
         await refreshTrayConnectionTooltip();
         await ensureUceDesktopPresence();
         await updateUceHealthStrip();

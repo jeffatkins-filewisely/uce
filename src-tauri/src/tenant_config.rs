@@ -68,9 +68,32 @@ fn write_config(app: &tauri::AppHandle, cfg: &TenantConfig) -> Result<(), String
     std::fs::write(path, raw).map_err(|e| e.to_string())
 }
 
+fn finalize_config(cfg: &mut TenantConfig) {
+    crate::filewisely_defaults::apply_production_defaults(cfg);
+}
+
 /// Full tenant file contents (defaults if missing).
+/// When a shop already saved `business_id` but not ingest URL / key (the old
+/// first-launch dialog), persist production defaults so heartbeat + CCC sync
+/// start without pasting the other two codes again.
 pub fn load_tenant_config(app: &tauri::AppHandle) -> Result<TenantConfig, String> {
-    read_config(app)
+    let mut cfg = read_config(app)?;
+    let before = cfg.clone();
+    if !cfg.business_id.trim().is_empty() {
+        finalize_config(&mut cfg);
+        if cfg != before {
+            if let Err(e) = write_config(app, &cfg) {
+                eprintln!("[UCE] uce-tenant.json default backfill write: {e}");
+            } else {
+                eprintln!(
+                    "[UCE] uce-tenant.json backfilled production defaults backend_len={} anon_set={}",
+                    cfg.backend_url.len(),
+                    !cfg.anon_key.is_empty()
+                );
+            }
+        }
+    }
+    Ok(cfg)
 }
 
 pub fn load_tenant_business_id(app: &tauri::AppHandle) -> Result<Option<String>, String> {
@@ -90,7 +113,14 @@ pub fn save_tenant_business_id(app: &tauri::AppHandle, business_id: String) -> R
     }
     let mut cfg = read_config(app)?;
     cfg.business_id = id.to_string();
-    write_config(app, &cfg)
+    finalize_config(&mut cfg);
+    write_config(app, &cfg)?;
+    eprintln!(
+        "[UCE] uce-tenant.json written (business_id) backend_len={} anon_set={}",
+        cfg.backend_url.len(),
+        !cfg.anon_key.is_empty()
+    );
+    Ok(())
 }
 
 /// `uce://connect` (or first launch) — set `business_id` and optional ingest credentials.
@@ -106,11 +136,12 @@ pub fn save_tenant_manual_all(
     if id.is_empty() {
         return Err("business_id is empty".to_string());
     }
-    let cfg = TenantConfig {
+    let mut cfg = TenantConfig {
         business_id: id.to_string(),
         backend_url: backend_url.trim().to_string(),
         anon_key: anon_key.trim().to_string(),
     };
+    finalize_config(&mut cfg);
     write_config(app, &cfg)?;
     eprintln!(
         "UCE_TENANT_CONFIG_SAVED source=manual_all business_id_len={} backend_len={} anon_len={}",
@@ -155,6 +186,7 @@ pub fn save_tenant_from_connect(
             cfg.anon_key = t.to_string();
         }
     }
+    finalize_config(&mut cfg);
     write_config(app, &cfg)?;
     eprintln!(
         "[UCE] uce-tenant.json written (from_connect) backend_len={} anon_set={}",
