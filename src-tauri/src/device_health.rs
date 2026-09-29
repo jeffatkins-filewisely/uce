@@ -245,7 +245,9 @@ pub fn tray_tooltip(snap: &DeviceHealthSnapshot) -> String {
         "Heartbeat: waiting for first success".to_string()
     };
 
-    let ccc_line = if snap.ccc_sync_paused {
+    let ccc_line = if !ccc_package_sync::live_mirror_outbound_enabled() {
+        "CCC: capture only (upload to FileWisely)".to_string()
+    } else if snap.ccc_sync_paused {
         "CCC sync: paused".to_string()
     } else if snap.ccc_sync_offline {
         "CCC sync: offline".to_string()

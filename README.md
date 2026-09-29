@@ -38,7 +38,7 @@ Example: `href="uce://connect?business_id=${businessId}"`. UCE registers the `uc
 
 **`docs/CCC_PACKAGE_SYNC.md`** — claim batch → download → write → ack for crew photos headed to CCC ONE. Covers hardcoded **`C:\FileWisely\CCC Import\`**, heartbeat `ccc_package_*` fields, 15s polling, tray status, and error/ack rules. Backend: `ccc-package-claim-batch` and `ccc-package-ack` edge functions.
 
-**`docs/TRAY_SILENT_INSTALL.md`** — per-user NSIS install (no UAC), tray menu (Open UCE / Open CCC Import / Pause·Resume sync), auto-start, close-to-tray.
+**`docs/TRAY_SILENT_INSTALL.md`** — per-user NSIS install (no UAC), tray menu (Open UCE / Incoming folder), auto-start, close-to-tray. FileWisely → CCC Import (Live Mirror) is off unless `UCE_CCC_LIVE_MIRROR=1`.
 
 **`docs/DEVICE_HEALTH.md`** — tray green/yellow/red, hover tooltip, `device_health` on heartbeat for remote diagnostics.
 

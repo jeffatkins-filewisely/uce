@@ -33,7 +33,7 @@ Artifacts: `src-tauri/target/release/bundle/msi/` and `bundle/nsis/`. Prefer the
 
 On startup, Rust calls `ensure_hardcoded_ccc_import_root()` — **no Windows folder dialog**.
 
-Webview: `ccc_import_hardcoded_root` IPC + `UCE_CCC_IMPORT_ROOT` in `main.js`; heartbeat always reports `ccc_package_capable: true` with this path when running in Sidekick.
+Webview: `ccc_import_hardcoded_root` IPC + `UCE_CCC_IMPORT_ROOT` in `main.js`. Heartbeat reports `ccc_package_capable: false` unless `UCE_CCC_LIVE_MIRROR=1` (FileWisely → CCC Import writer is off by default).
 
 ---
 
@@ -44,10 +44,9 @@ Right-click (^ by clock):
 | Item | Action |
 |------|--------|
 | **Open FileWisely UCE** | Show/focus overlay |
-| **Open CCC Import Folder** | Explorer → `C:\FileWisely\CCC Import` |
-| **Pause Mirror** | Pauses only the CCC mirror claim loop (emits `uce:pause`). Heartbeat + document capture/upload keep running, so the device stays online (shown as "Paused"). |
-| **Resume Mirror** | Resumes the CCC mirror (emits `uce:resume`) |
-| **CCC sync: …** | Status line (Paused / Offline / pending / syncing) |
+| **Open FileWisely Incoming** | Explorer → `C:\FileWisely\Incoming` (Live Mirror off). With `UCE_CCC_LIVE_MIRROR=1`, this item opens `C:\FileWisely\CCC Import` instead. |
+| **Pause / Resume Mirror** | Disabled unless Live Mirror outbound is on. |
+| **CCC: capture only** | Status line — CCC files upload to FileWisely; no FileWisely → CCC writer |
 | *Support* | Connection Status, Connect, Copy Diagnostic Report, Reload |
 | **Quit** | Exit process |
 

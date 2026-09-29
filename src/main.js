@@ -772,7 +772,10 @@ async function sendUceHeartbeat() {
       invoke("uce_os_info"),
     ]);
     let cccPackageRoot = UCE_CCC_IMPORT_ROOT;
-    let cccPackageCapable = true;
+    // Live Mirror (FileWisely → CCC Import) is off. Heartbeat still reports
+    // the path as empty / not capable so the portal does not treat this PC
+    // as a CCC writer.
+    let cccPackageCapable = false;
     try {
       const hardcoded = await invoke("ccc_import_hardcoded_root");
       if (hardcoded && String(hardcoded).trim()) {

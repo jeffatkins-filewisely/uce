@@ -1,4 +1,8 @@
-//! Claim → download → write → ack loop for FileWisely CCC package queue (15s when online).
+//! Claim → download → write → ack loop for FileWisely → CCC Import (Live Mirror).
+//!
+//! Product default: **off**. Shops need CCC files **into** FileWisely (folder watch /
+//! ingest), not FileWisely files written onto disk for CCC ONE. Re-enable with
+//! `UCE_CCC_LIVE_MIRROR=1` if a shop still imports from `C:\FileWisely\CCC Import\`.
 
 use crate::ccc_import_settings::{self, effective_ccc_package_root};
 use crate::device_id;
@@ -42,6 +46,13 @@ static CCC_SYNC_STATUS_ITEM: OnceLock<MenuItem<Wry>> = OnceLock::new();
 static PAUSE_SYNC_ITEM: OnceLock<MenuItem<Wry>> = OnceLock::new();
 static RESUME_SYNC_ITEM: OnceLock<MenuItem<Wry>> = OnceLock::new();
 
+/// FileWisely → CCC Import writer. Off unless `UCE_CCC_LIVE_MIRROR=1`.
+pub fn live_mirror_outbound_enabled() -> bool {
+    std::env::var("UCE_CCC_LIVE_MIRROR")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
 /// Clone stored when the tray menu is built (`main.rs`).
 pub fn register_ccc_sync_status_item(item: MenuItem<Wry>) {
     let _ = CCC_SYNC_STATUS_ITEM.set(item);
@@ -54,10 +65,16 @@ pub fn register_pause_resume_items(pause: MenuItem<Wry>, resume: MenuItem<Wry>) 
 }
 
 pub fn is_sync_paused() -> bool {
+    if !live_mirror_outbound_enabled() {
+        return false;
+    }
     SYNC_PAUSED.load(Ordering::Relaxed)
 }
 
 pub fn is_ccc_offline() -> bool {
+    if !live_mirror_outbound_enabled() {
+        return false;
+    }
     *OFFLINE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -66,6 +83,9 @@ pub fn syncing_count() -> u32 {
 }
 
 pub fn set_sync_paused(app: &AppHandle, paused: bool) {
+    if !live_mirror_outbound_enabled() {
+        return;
+    }
     SYNC_PAUSED.store(paused, Ordering::Relaxed);
     refresh_pause_resume_menu();
     crate::device_health::refresh_tray(app);
@@ -79,6 +99,17 @@ pub fn set_sync_paused(app: &AppHandle, paused: bool) {
 }
 
 pub fn refresh_pause_resume_menu() {
+    if !live_mirror_outbound_enabled() {
+        if let Some(item) = PAUSE_SYNC_ITEM.get() {
+            let _ = item.set_enabled(false);
+            let _ = item.set_text("Pause Mirror (off)");
+        }
+        if let Some(item) = RESUME_SYNC_ITEM.get() {
+            let _ = item.set_enabled(false);
+            let _ = item.set_text("Resume Mirror (off)");
+        }
+        return;
+    }
     let paused = is_sync_paused();
     if let Some(item) = PAUSE_SYNC_ITEM.get() {
         let _ = item.set_enabled(!paused);
@@ -168,6 +199,9 @@ struct AckBatchBody<'a> {
 }
 
 pub fn tray_ccc_sync_label() -> String {
+    if !live_mirror_outbound_enabled() {
+        return "CCC: capture only (no Live Mirror)".to_string();
+    }
     if is_sync_paused() {
         return "CCC sync: Paused".to_string();
     }
@@ -1068,6 +1102,14 @@ mod path_tests {
 #[cfg(test)]
 mod parse_tests {
     use super::*;
+
+    #[test]
+    fn live_mirror_outbound_defaults_off() {
+        assert!(
+            !live_mirror_outbound_enabled(),
+            "FileWisely → CCC Import must stay off unless UCE_CCC_LIVE_MIRROR=1"
+        );
+    }
 
     #[test]
     fn parses_snake_case_items() {
@@ -2068,6 +2110,12 @@ async fn wait_for_device_id(app: &AppHandle, max_wait_secs: u64) {
 }
 
 pub fn spawn_ccc_package_sync(app: AppHandle) {
+    if !live_mirror_outbound_enabled() {
+        eprintln!(
+            "[UCE] Live Mirror outbound off — CCC files upload to FileWisely; FileWisely files are not written to CCC Import. Set UCE_CCC_LIVE_MIRROR=1 to restore the writer."
+        );
+        return;
+    }
     tauri::async_runtime::spawn(async move {
         wait_for_device_id(&app, 45).await;
         let mut backoff = POLL_INTERVAL_SECS;

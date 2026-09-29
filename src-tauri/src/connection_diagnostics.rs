@@ -593,6 +593,7 @@ pub fn uce_get_connection_diagnostics(app: AppHandle) -> Result<serde_json::Valu
         "main_overlay_loaded": main_overlay,
         "capture_pipeline": capture_pipeline_snapshot(&app),
         "ccc_writer": json!({
+            "live_mirror_outbound_enabled": ccc_package_sync::live_mirror_outbound_enabled(),
             "ccc_import_root": ccc_import_settings::DEFAULT_CCC_PACKAGE_ROOT,
             "ccc_import_writable": ccc_package_sync::ccc_import_writable(),
             "claim_offline": ccc_package_sync::is_ccc_offline(),
@@ -966,7 +967,13 @@ fn format_capture_pipeline_plain(cp: &serde_json::Value) -> String {
 
 fn format_ccc_writer_plain(cw: &serde_json::Value) -> String {
     let mut out = String::new();
-    out.push_str("=== CCC Import writer (cloud → local) ===\n");
+    out.push_str("=== CCC Import writer (cloud → local; off unless UCE_CCC_LIVE_MIRROR=1) ===\n");
+    out.push_str(&format!(
+        "live_mirror_outbound_enabled: {}\n",
+        cw.get("live_mirror_outbound_enabled")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false)
+    ));
     out.push_str(&format!(
         "ccc_import_root: {}\n",
         cw.get("ccc_import_root").and_then(|x| x.as_str()).unwrap_or("?")

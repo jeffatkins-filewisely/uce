@@ -152,13 +152,15 @@ fn run_watchdog_tick(app: &AppHandle) {
         }
     }
 
-    let ccc_last = device_health::last_ccc_sync_unix_ms();
-    if ccc_last > 0 {
-        let ccc_age = now.saturating_sub(ccc_last);
-        if ccc_age > CCC_ACTIVITY_STALE_MS && !ccc_package_sync::is_ccc_offline() {
-            append_health_log(&format!(
-                "ccc sync idle long age_ms={ccc_age} (poll continues)"
-            ));
+    if ccc_package_sync::live_mirror_outbound_enabled() {
+        let ccc_last = device_health::last_ccc_sync_unix_ms();
+        if ccc_last > 0 {
+            let ccc_age = now.saturating_sub(ccc_last);
+            if ccc_age > CCC_ACTIVITY_STALE_MS && !ccc_package_sync::is_ccc_offline() {
+                append_health_log(&format!(
+                    "ccc sync idle long age_ms={ccc_age} (poll continues)"
+                ));
+            }
         }
     }
 
