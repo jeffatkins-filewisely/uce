@@ -5,6 +5,14 @@ export const FILEWISELY_DEFAULT_INGEST_URL =
 export const FILEWISELY_DEFAULT_HANDSHAKE_URL =
   "https://pujwbzqnoevqxrwipnwo.supabase.co/functions/v1/uce-claim-handshake";
 
+/**
+ * Production Supabase anon / publishable key (role=anon, project pujwbzqnoevqxrwipnwo).
+ * Public-by-design — already shipped in FileWisely's web bundle as
+ * VITE_SUPABASE_PUBLISHABLE_KEY. Shops should never have to paste it.
+ */
+export const FILEWISELY_DEFAULT_ANON_KEY =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB1andienFub2V2cXhyd2lwbndvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE1NjQ3OTYsImV4cCI6MjA3NzE0MDc5Nn0.4FmMOBHVye4ewriLnmcwR_JhmlnL4hIE3j51LL7xM7k";
+
 export function isValidUuid(value) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
     String(value).trim()

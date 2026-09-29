@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  FILEWISELY_DEFAULT_ANON_KEY,
   FILEWISELY_DEFAULT_INGEST_URL,
   FILEWISELY_DEFAULT_HANDSHAKE_URL,
   parseUceConnectParams,
@@ -33,4 +34,15 @@ test("handshake URL falls back to production", () => {
   const url = resolveHandshakeClaimUrl("", "", "");
   assert.equal(url, FILEWISELY_DEFAULT_HANDSHAKE_URL);
   assert.match(FILEWISELY_DEFAULT_INGEST_URL, /uce-ingest/);
+});
+
+test("production anon key is the FileWisely publishable JWT", () => {
+  assert.match(FILEWISELY_DEFAULT_ANON_KEY, /^eyJ/);
+  const payload = JSON.parse(
+    Buffer.from(FILEWISELY_DEFAULT_ANON_KEY.split(".")[1], "base64url").toString(
+      "utf8"
+    )
+  );
+  assert.equal(payload.ref, "pujwbzqnoevqxrwipnwo");
+  assert.equal(payload.role, "anon");
 });

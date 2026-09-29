@@ -14,15 +14,23 @@ pub const PRODUCTION_INGEST_URL: &str =
 pub const PRODUCTION_HANDSHAKE_URL: &str =
     "https://pujwbzqnoevqxrwipnwo.supabase.co/functions/v1/uce-claim-handshake";
 
-/// Optional compile-time anon key (`UCE_PRODUCTION_ANON_KEY` / Vite env on MSI).
-/// Supabase anon keys are public-by-design (RLS); shops should not have to paste them.
+/// Production Supabase anon / publishable JWT (role=anon, project pujwbzqnoevqxrwipnwo).
+/// Same value FileWisely ships as `VITE_SUPABASE_PUBLISHABLE_KEY`. Public-by-design (RLS).
+pub const PRODUCTION_ANON_KEY: &str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB1andienFub2V2cXhyd2lwbndvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE1NjQ3OTYsImV4cCI6MjA3NzE0MDc5Nn0.4FmMOBHVye4ewriLnmcwR_JhmlnL4hIE3j51LL7xM7k";
+
+/// Compile-time override (`UCE_PRODUCTION_ANON_KEY` / Vite env on MSI) wins when set;
+/// otherwise the baked production key is used so shops never paste it.
 pub fn production_anon_key() -> String {
-    option_env!("UCE_PRODUCTION_ANON_KEY")
+    let from_env = option_env!("UCE_PRODUCTION_ANON_KEY")
         .or_else(|| option_env!("VITE_UCE_SUPABASE_ANON_KEY"))
         .or_else(|| option_env!("VITE_SUPABASE_ANON_KEY"))
         .unwrap_or("")
-        .trim()
-        .to_string()
+        .trim();
+    if from_env.is_empty() {
+        PRODUCTION_ANON_KEY.to_string()
+    } else {
+        from_env.to_string()
+    }
 }
 
 /// Fill empty ingest URL / anon key with production defaults. Never overwrites
@@ -65,5 +73,13 @@ mod tests {
     #[test]
     fn handshake_url_empty_uses_production() {
         assert_eq!(handshake_claim_url(""), PRODUCTION_HANDSHAKE_URL);
+    }
+
+    #[test]
+    fn production_anon_key_is_baked_in() {
+        let key = production_anon_key();
+        assert!(key.starts_with("eyJ"));
+        assert!(key.len() > 80);
+        assert_eq!(key, PRODUCTION_ANON_KEY);
     }
 }

@@ -22,7 +22,9 @@ After install, shops should not paste credentials. FileWisely **Connect to compu
 
 or a one-shot `uce://connect?handshake_token=<token>` / `uce://connect?token=<token>`.
 
-The production ingest URL is built into UCE (`https://pujwbzqnoevqxrwipnwo.supabase.co/functions/v1/uce-ingest`), so a business-id-only link is enough for Anaheim and every other customer. Optional `backend_url` + `anon_key` on the link still win when present.
+The production ingest URL and the public Supabase anon key are built into UCE, so a business-id-only link is enough for Anaheim and every other customer. Optional `backend_url` + `anon_key` on the link still win when present.
+
+On a PC that already looks “connected” but is missing the key, it belongs in `%APPDATA%\com.filewisely.uce\uce-tenant.json` as `anon_key`. After 0.1.80, UCE writes the production key there automatically when `business_id` is set.
 
 If the deep link misses, first launch shows all **three** values (business ID, ingest URL, anon key) so support can paste them. Rust applies `uce://` links as soon as Windows delivers them, even before the overlay JS is ready.
 

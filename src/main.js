@@ -36,6 +36,7 @@ import {
 } from "./uceContextSignals.js";
 import { getUceDeviceId } from "./uceDeviceId.js";
 import {
+  FILEWISELY_DEFAULT_ANON_KEY,
   FILEWISELY_DEFAULT_INGEST_URL,
   isValidUuid,
   parseUceConnectParams,
@@ -81,7 +82,11 @@ function getBackendUploadUrl() {
 }
 
 function getSupabaseAnonKey() {
-  return (resolvedAnonKey || ENV_SUPABASE_ANON_KEY).trim();
+  return (
+    resolvedAnonKey ||
+    ENV_SUPABASE_ANON_KEY ||
+    FILEWISELY_DEFAULT_ANON_KEY
+  ).trim();
 }
 
 /** No secrets: host + key length only. Call from init or `window.__uceLogConnectionState()`. */
@@ -3240,7 +3245,7 @@ async function showTenantSetupDialog() {
           await invoke("save_tenant_manual_all", {
             businessId: v,
             backendUrl: url || FILEWISELY_DEFAULT_INGEST_URL,
-            anonKey: key,
+            anonKey: key || FILEWISELY_DEFAULT_ANON_KEY,
           });
         } else {
           await invoke("save_tenant_business_id", { business_id: v });

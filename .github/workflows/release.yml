@@ -43,9 +43,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # Same FileWisely production backend for every shop MSI. Anon key is
-          # optional (public-by-design); add repo secret VITE_SUPABASE_ANON_KEY
-          # so Connect-to-computer does not require shops to paste it.
+          # Same FileWisely production backend for every shop MSI. The public
+          # anon key is also baked into filewisely_defaults; the secret here is
+          # an optional override if the JWT is ever rotated.
           VITE_UCE_UPLOAD_URL: https://pujwbzqnoevqxrwipnwo.supabase.co/functions/v1/uce-ingest
           VITE_UCE_HANDSHAKE_CLAIM_URL: https://pujwbzqnoevqxrwipnwo.supabase.co/functions/v1/uce-claim-handshake
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
