@@ -3,6 +3,49 @@ use crate::types::{ContextBucket, ContextClassification, Rule};
 pub fn known_rules() -> Vec<Rule> {
     vec![
         Rule {
+            id: "mitchell_work_order".to_string(),
+            app_keywords: vec![],
+            title_keywords: vec![
+                "mitchell work order".to_string(),
+                "ultramate".to_string(),
+                "mitchell labor".to_string(),
+                "mitchell flag".to_string(),
+            ],
+            title_keywords_all: vec![],
+            priority: 0,
+            cooldown_secs: 8,
+            workflow_kind: "mitchell".to_string(),
+        },
+        Rule {
+            id: "ccc_work_order".to_string(),
+            app_keywords: vec![],
+            title_keywords: vec![
+                "work order".to_string(),
+                "workorder".to_string(),
+                "labor assignment".to_string(),
+                "flag hours".to_string(),
+                "tech hours".to_string(),
+                "labor hours".to_string(),
+                "labor operations".to_string(),
+            ],
+            title_keywords_all: vec![],
+            priority: 0,
+            cooldown_secs: 8,
+            workflow_kind: "ccc".to_string(),
+        },
+        Rule {
+            id: "mitchell_open".to_string(),
+            app_keywords: vec![],
+            title_keywords: vec![
+                "mitchell".to_string(),
+                "cloud estimating".to_string(),
+            ],
+            title_keywords_all: vec![],
+            priority: 1,
+            cooldown_secs: 8,
+            workflow_kind: "mitchell".to_string(),
+        },
+        Rule {
             id: "ccc_estimate".to_string(),
             app_keywords: vec![],
             title_keywords: vec![
@@ -252,6 +295,9 @@ pub fn workflow_kind_from_rule_id(rule_id: &str) -> String {
     if id.starts_with("ccc_") {
         return "ccc".to_string();
     }
+    if id.starts_with("mitchell_") {
+        return "mitchell".to_string();
+    }
     if id.starts_with("tesla_epc_") {
         return "tesla_epc".to_string();
     }
@@ -284,7 +330,7 @@ pub fn workflow_kind_from_rule_id(rule_id: &str) -> String {
 
 pub fn preferred_capture_mode_for_rule(rule_id: &str) -> String {
     match workflow_kind_from_rule_id(rule_id).as_str() {
-        "ccc" | "scan" => "pdf".to_string(),
+        "ccc" | "mitchell" | "scan" => "pdf".to_string(),
         _ => "screenshot".to_string(),
     }
 }

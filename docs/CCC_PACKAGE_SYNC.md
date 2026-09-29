@@ -1,6 +1,8 @@
 # CCC package sync (UCE Sidekick / Tauri)
 
-FileWisely queues photos for CCC ONE import; **Sidekick** claims batches, downloads signed URLs, writes files under a local **CCC Import** tree, and acknowledges each item. No CCC ONE writes, folder watching, or Mitchell integration in this MVP.
+**Default (v0.1.81+): Live Mirror outbound is off.** UCE does **not** write FileWisely files into `C:\FileWisely\CCC Import\` for CCC ONE. The job is the other direction: watch CCC / scan / Incoming folders and **upload into FileWisely**.
+
+The claim → download → write → ack loop below is retained for shops that still import from that folder. Re-enable with environment variable `UCE_CCC_LIVE_MIRROR=1`.
 
 Backend edge functions (FileWisely repo) must be deployed before sync works; this document is the **desktop contract**.
 

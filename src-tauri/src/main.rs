@@ -8,6 +8,9 @@ mod memory_store;
 mod pdf_watch_config;
 mod services;
 mod tenant_config;
+mod filewisely_defaults;
+mod uce_connect;
+mod flag_pay;
 mod types;
 mod uce_webview_url;
 mod connection_diagnostics;
@@ -533,7 +536,11 @@ fn uce_try_build_tray(app: &tauri::AppHandle) {
     let open_folder_i = match MenuItem::with_id(
         app,
         "uce-tray-open-folder",
-        "Open CCC Import Folder",
+        if ccc_package_sync::live_mirror_outbound_enabled() {
+            "Open CCC Import Folder"
+        } else {
+            "Open FileWisely Incoming"
+        },
         true,
         None::<&str>,
     ) {
@@ -695,8 +702,14 @@ fn uce_try_build_tray(app: &tauri::AppHandle) {
             match event.id.as_ref() {
                 "uce-tray-open-app" => uce_tray_show_main(app),
                 "uce-tray-open-folder" => {
-                    if let Err(e) = ccc_import_settings::ccc_import_open_root_folder(app.clone()) {
-                        eprintln!("[UCE] tray Open CCC Import folder: {e}");
+                    if ccc_package_sync::live_mirror_outbound_enabled() {
+                        if let Err(e) = ccc_import_settings::ccc_import_open_root_folder(app.clone()) {
+                            eprintln!("[UCE] tray Open CCC Import folder: {e}");
+                        }
+                    } else if let Err(e) =
+                        ccc_import_settings::open_folder_in_explorer(print_config::FW_OUTPUT_DIR)
+                    {
+                        eprintln!("[UCE] tray Open FileWisely Incoming: {e}");
                     }
                 }
                 "uce-tray-pause" => ccc_package_sync::set_sync_paused(app, true),
@@ -2242,6 +2255,7 @@ pub fn run() {
                 .collect();
             if !deeplinks.is_empty() {
                 eprintln!("[UCE] single-instance forwarding deeplinks to webview: {:?}", deeplinks);
+                uce_connect::spawn_apply_connect_urls(app.clone(), deeplinks.clone());
                 if let Err(e) = app.emit("uce-argv-deeplinks", deeplinks) {
                     eprintln!("[UCE] emit uce-argv-deeplinks: {e}");
                 }
@@ -2281,6 +2295,7 @@ pub fn run() {
                 if let Err(e) = app.deep_link().register_all() {
                     eprintln!("[UCE] deep_link register_all: {}", e);
                 }
+                uce_connect::listen_and_apply_startup_deeplinks(app.handle());
             }
             {
                 let h = app.handle().clone();
@@ -2294,15 +2309,17 @@ pub fn run() {
             uce_try_build_tray(app.handle());
             {
                 let h = app.handle().clone();
-                ccc_import_settings::ensure_hardcoded_ccc_import_root(&h);
-                match ccc_import_settings::probe_ccc_import_writable(
-                    ccc_import_settings::DEFAULT_CCC_PACKAGE_ROOT,
-                ) {
-                    Ok(()) => ccc_package_sync::set_ccc_import_writable(true),
-                    Err(e) => {
-                        ccc_package_sync::set_ccc_import_writable(false);
-                        device_health::set_last_error(format!("CCC Import not writable: {e}"));
-                        eprintln!("[UCE] CCC Import write probe failed: {e}");
+                if ccc_package_sync::live_mirror_outbound_enabled() {
+                    ccc_import_settings::ensure_hardcoded_ccc_import_root(&h);
+                    match ccc_import_settings::probe_ccc_import_writable(
+                        ccc_import_settings::DEFAULT_CCC_PACKAGE_ROOT,
+                    ) {
+                        Ok(()) => ccc_package_sync::set_ccc_import_writable(true),
+                        Err(e) => {
+                            ccc_package_sync::set_ccc_import_writable(false);
+                            device_health::set_last_error(format!("CCC Import not writable: {e}"));
+                            eprintln!("[UCE] CCC Import write probe failed: {e}");
+                        }
                     }
                 }
                 device_health::refresh_tray(&h);
@@ -2406,6 +2423,7 @@ pub fn run() {
             get_pdf_watch_config,
             save_pdf_watch_config,
             read_pdf_file,
+            flag_pay::uce_extract_flag_pay,
             uce_move_fw_pdf_outcome,
             uce_fw_pipeline_log,
             uce_log_pdf_lifecycle,

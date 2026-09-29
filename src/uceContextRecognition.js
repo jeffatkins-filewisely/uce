@@ -5,7 +5,7 @@
 
 import { inferCccDocSignalsFromTitle } from "./uceCccTitleSignals.js";
 
-/** @typedef {'ccc_estimate' | 'ccc_supplement' | 'ccc_final_bill' | 'ccc_print_dialog' | 'tesla_epc' | 'parts_invoice' | 'unknown'} UceContextType */
+/** @typedef {'ccc_estimate' | 'ccc_supplement' | 'ccc_final_bill' | 'ccc_print_dialog' | 'ccc_work_order' | 'mitchell_work_order' | 'tesla_epc' | 'parts_invoice' | 'unknown'} UceContextType */
 
 /** @typedef {'known' | 'candidate' | 'unknown'} UceContextBucket */
 
@@ -23,6 +23,8 @@ import { inferCccDocSignalsFromTitle } from "./uceCccTitleSignals.js";
 
 const TYPE_PRIORITY = {
   ccc_print_dialog: 100,
+  ccc_work_order: 95,
+  mitchell_work_order: 94,
   ccc_final_bill: 90,
   ccc_supplement: 80,
   ccc_estimate: 70,
@@ -61,6 +63,8 @@ function mapRustRuleToType(ruleId) {
   if (id === "ccc_estimate") return "ccc_estimate";
   if (id === "ccc_supplement") return "ccc_supplement";
   if (id === "ccc_final_bill") return "ccc_final_bill";
+  if (id === "ccc_work_order") return "ccc_work_order";
+  if (id.startsWith("mitchell")) return "mitchell_work_order";
   if (id.startsWith("tesla_epc")) return "tesla_epc";
   if (id.startsWith("partstrader") || id.startsWith("parts_trader"))
     return "parts_invoice";
@@ -77,7 +81,9 @@ function preferredModeForType(type) {
     type === "ccc_estimate" ||
     type === "ccc_supplement" ||
     type === "ccc_final_bill" ||
-    type === "ccc_print_dialog"
+    type === "ccc_print_dialog" ||
+    type === "ccc_work_order" ||
+    type === "mitchell_work_order"
   ) {
     return "pdf";
   }
@@ -112,6 +118,10 @@ export function detectUceContext(watchContext, signals = {}) {
   const hasFinal = docSignals.some((s) => s.key === "final_bill");
   const hasSupp = docSignals.some((s) => String(s.key).startsWith("supplement_"));
   const hasEst = docSignals.some((s) => s.key === "estimate");
+  const hasWorkOrder = docSignals.some((s) => s.key === "work_order");
+  const mitchellSurface =
+    /\b(mitchell|ultramate|cloud\s*estimating)\b/i.test(t) ||
+    /\bmitchell\b/i.test(app);
   const workfilePrint =
     /\bworkfile\b/i.test(t) && /\bprint/i.test(t);
 
@@ -123,6 +133,19 @@ export function detectUceContext(watchContext, signals = {}) {
 
   /** @type {{ type: UceContextType, confidence: number, bucket: UceContextBucket, matchedRule: string }[]} */
   const hits = [];
+
+  if (hasWorkOrder || /\bwork\s*order\b/i.test(t) || /\bflag\s*hours?\b/i.test(t)) {
+    const type = mitchellSurface ? "mitchell_work_order" : "ccc_work_order";
+    hits.push({
+      type,
+      confidence: mitchellSurface || cccSurface ? 0.93 : 0.72,
+      bucket:
+        mitchellSurface || cccSurface || rustBucket === "known"
+          ? "known"
+          : "candidate",
+      matchedRule: mitchellSurface ? "js_mitchell_work_order" : "js_ccc_work_order",
+    });
+  }
 
   if (
     printish &&

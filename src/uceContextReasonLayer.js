@@ -11,6 +11,8 @@ function typeHeadline(type, bucket) {
     ccc_supplement: "CCC Supplement",
     ccc_final_bill: "CCC Final Bill",
     ccc_print_dialog: "CCC Print / workfile",
+    ccc_work_order: "CCC work order / flag hours",
+    mitchell_work_order: "Mitchell work order / flag hours",
     tesla_epc: "Tesla EPC",
     parts_invoice: "Parts / invoice",
     unknown: "Unknown context",

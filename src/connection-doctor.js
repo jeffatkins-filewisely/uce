@@ -3,6 +3,10 @@ import { emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getUceDeviceId } from "./uceDeviceId.js";
 import {
+  FILEWISELY_DEFAULT_ANON_KEY,
+  FILEWISELY_DEFAULT_INGEST_URL,
+} from "./filewiselyDefaults.js";
+import {
   getUceSuppressAllCached,
   initUcePopupSuppression,
   tracePopupSuppressed,
@@ -43,13 +47,13 @@ async function renderConnect() {
   root.innerHTML = `
 <div class="wrap">
   <h1>Connect to FileWisely</h1>
-  <p class="hint">Paste values from FileWisely (Advanced Settings / Connect). Required for heartbeat and uploads.</p>
+  <p class="hint">Click <strong>Connect to computer</strong> in FileWisely to pair automatically. If that does not fire, paste the business ID here. Ingest URL and anon key are pre-filled for every shop.</p>
   <label>Business ID (UUID)</label>
   <input id="cdBiz" type="text" spellcheck="false" autocomplete="off" value="${esc(cfg.business_id || "")}" />
   <label>Backend / ingest URL (uce-ingest HTTPS endpoint)</label>
-  <input id="cdUrl" type="text" spellcheck="false" autocomplete="off" value="${esc(cfg.backend_url || "")}" />
+  <input id="cdUrl" type="text" spellcheck="false" autocomplete="off" value="${esc(cfg.backend_url || FILEWISELY_DEFAULT_INGEST_URL)}" />
   <label>Supabase anon key (api key)</label>
-  <input id="cdKey" type="password" spellcheck="false" autocomplete="off" value="${esc(cfg.anon_key || "")}" />
+  <input id="cdKey" type="password" spellcheck="false" autocomplete="off" value="${esc(cfg.anon_key || FILEWISELY_DEFAULT_ANON_KEY)}" />
   <div class="row">
     <button type="button" id="cdSaveTest">Save &amp; Test Connection</button>
     <button type="button" id="cdSaveOnly" class="secondary">Save only</button>
@@ -74,7 +78,7 @@ async function renderConnect() {
       await invoke("save_tenant_manual_all", {
         businessId: biz,
         backendUrl: url,
-        anonKey: key,
+        anonKey: key || FILEWISELY_DEFAULT_ANON_KEY,
       });
       await invoke("uce_refresh_tray_connection_tooltip");
       await emit("uce-tenant-saved", {});
@@ -96,7 +100,7 @@ async function renderConnect() {
       await invoke("save_tenant_manual_all", {
         businessId: biz,
         backendUrl: url,
-        anonKey: key,
+        anonKey: key || FILEWISELY_DEFAULT_ANON_KEY,
       });
       await invoke("uce_refresh_tray_connection_tooltip");
       await emit("uce-tenant-saved", {});

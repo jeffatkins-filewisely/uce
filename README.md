@@ -14,13 +14,21 @@ This folder is not automatically a Git repository: run `git init`, create a repo
    `git tag v0.1.2 && git push origin v0.1.2`  
    The workflow in `.github/workflows/release.yml` builds the MSI, signs updater artifacts, and attaches them to the GitHub release. Installed clients poll for updates (see `maybeCheckForUceAppUpdate` in `src/main.js`).
 
-### Business ID deep link (FileWisely web → desktop)
+### Connect to computer (FileWisely web → desktop)
 
-After install, users should not need to paste the UUID manually if the web app opens the desktop handler:
+After install, shops should not paste credentials. FileWisely **Connect to computer** opens:
 
 `uce://connect?business_id=<uuid>`
 
-Example anchor/button: `href="uce://connect?business_id=${businessId}"` (or redirect to that URL from your edge function). UCE registers the `uce` scheme on Windows; a running instance receives the link via the single-instance + deep-link plugins.
+or a one-shot `uce://connect?handshake_token=<token>` / `uce://connect?token=<token>`.
+
+The production ingest URL and the public Supabase anon key are built into UCE, so a business-id-only link is enough for Anaheim and every other customer. Optional `backend_url` + `anon_key` on the link still win when present.
+
+On a PC that already looks “connected” but is missing the key, it belongs in `%APPDATA%\com.filewisely.uce\uce-tenant.json` as `anon_key`. After 0.1.80, UCE writes the production key there automatically when `business_id` is set.
+
+If the deep link misses, first launch shows all **three** values (business ID, ingest URL, anon key) so support can paste them. Rust applies `uce://` links as soon as Windows delivers them, even before the overlay JS is ready.
+
+Example: `href="uce://connect?business_id=${businessId}"`. UCE registers the `uce` scheme on Windows; a running instance receives the link via the single-instance + deep-link plugins.
 
 ## Ingestion pipeline (desktop → FileWisely backend)
 
@@ -30,7 +38,7 @@ Example anchor/button: `href="uce://connect?business_id=${businessId}"` (or redi
 
 **`docs/CCC_PACKAGE_SYNC.md`** — claim batch → download → write → ack for crew photos headed to CCC ONE. Covers hardcoded **`C:\FileWisely\CCC Import\`**, heartbeat `ccc_package_*` fields, 15s polling, tray status, and error/ack rules. Backend: `ccc-package-claim-batch` and `ccc-package-ack` edge functions.
 
-**`docs/TRAY_SILENT_INSTALL.md`** — per-user NSIS install (no UAC), tray menu (Open UCE / Open CCC Import / Pause·Resume sync), auto-start, close-to-tray.
+**`docs/TRAY_SILENT_INSTALL.md`** — per-user NSIS install (no UAC), tray menu (Open UCE / Incoming folder), auto-start, close-to-tray. FileWisely → CCC Import (Live Mirror) is off unless `UCE_CCC_LIVE_MIRROR=1`.
 
 **`docs/DEVICE_HEALTH.md`** — tray green/yellow/red, hover tooltip, `device_health` on heartbeat for remote diagnostics.
 

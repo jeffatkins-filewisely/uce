@@ -13,6 +13,7 @@ const GLOW_CLASSES = [
   "uce-ctx-glow--supplement",
   "uce-ctx-glow--final_bill",
   "uce-ctx-glow--print",
+  "uce-ctx-glow--work_order",
   "uce-ctx-glow--tesla",
   "uce-ctx-glow--parts",
 ];
@@ -22,6 +23,8 @@ const TYPE_CLASSES = [
   "uce-ctx--ccc_supplement",
   "uce-ctx--ccc_final_bill",
   "uce-ctx--ccc_print_dialog",
+  "uce-ctx--ccc_work_order",
+  "uce-ctx--mitchell_work_order",
   "uce-ctx--tesla_epc",
   "uce-ctx--parts_invoice",
   "uce-ctx--unknown",
@@ -40,6 +43,10 @@ function tooltipFor(detected) {
         return "Possible Final Bill — click if this matches what you see";
       case "ccc_print_dialog":
         return "Print may be active — not certain yet";
+      case "ccc_work_order":
+        return "Possible CCC work order — click to capture flag hours";
+      case "mitchell_work_order":
+        return "Possible Mitchell work order — click to capture flag hours";
       case "tesla_epc":
         return "Possible Tesla EPC — click to capture";
       case "parts_invoice":
@@ -57,6 +64,10 @@ function tooltipFor(detected) {
       return "Detected: Final Bill — click to capture (PDF)";
     case "ccc_print_dialog":
       return "Print detected — click to capture (PDF)";
+    case "ccc_work_order":
+      return "Work order — click to capture flag hours (PDF)";
+    case "mitchell_work_order":
+      return "Mitchell work order — click to capture flag hours (PDF)";
     case "tesla_epc":
       return "Tesla EPC — click to capture";
     case "parts_invoice":
@@ -210,6 +221,10 @@ export function applyUceFloatingButtonChrome(button, detected, opts = {}) {
       break;
     case "ccc_print_dialog":
       button.classList.add("uce-ctx-glow--print", "uce-btn--context-glow");
+      break;
+    case "ccc_work_order":
+    case "mitchell_work_order":
+      button.classList.add("uce-ctx-glow--work_order", "uce-btn--context-glow");
       break;
     case "tesla_epc":
       button.classList.add("uce-ctx-glow--tesla", "uce-btn--context-glow");
